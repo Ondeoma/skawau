@@ -1,0 +1,42 @@
+# 開発用: PostgreSQL + PGroonga、ScalaS3（S3互換ストレージ）、ONLYOFFICE Document Server
+# skea・skiwi の開発環境と同時に動かせるよう、ポートをずらしている
+name: skawau
+services:
+  db:
+    image: groonga/pgroonga:4.1.0-alpine-17-slim
+    environment:
+      POSTGRES_USER: skawau
+      POSTGRES_PASSWORD: skawau
+      POSTGRES_DB: skawau
+    ports: ["54340:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/docker/dev-initdb.sql:/docker-entrypoint-initdb.d/10-skawau-test.sql:ro   # テスト用DB skawau_test
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "skawau"]
+      interval: 2s
+      retries: 30
+  s3:
+    build: { context: ./deploy/docker, dockerfile: scalas3.Dockerfile }   # 初回はソースからビルドする
+    image: skawau-scalas3:dev
+    environment:
+      SCALAS3_ACCESS_KEY: skawau
+      SCALAS3_SECRET_KEY: skawauskawauskawau
+    ports: ["3911:3900"]
+    volumes: ["s3data:/var/lib/scalas3/data"]
+  # ONLYOFFICE Document Server（http://localhost:8093）。アプリ（ホストの :8092）へは host.docker.internal で届く
+  office:
+    image: onlyoffice/documentserver:9.1
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: skawau-dev-onlyoffice-secret-0123456789
+      JWT_HEADER: Authorization
+      JWT_IN_BODY: "true"
+      ALLOW_PRIVATE_IP_ADDRESS: "true"   # 開発用: ホスト（プライベートアドレス）のアプリから文書を取れるようにする
+    ports: ["8093:80"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes: ["officedata:/var/www/onlyoffice/Data"]
+volumes:
+  pgdata:
+  s3data:
+  officedata:

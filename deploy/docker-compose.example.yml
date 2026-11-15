@@ -1,0 +1,71 @@
+# 1台で動かす例: skawau アプリ + PostgreSQL(PGroonga) + S3 互換ストレージ(ScalaS3) + ONLYOFFICE Document Server
+# 前に HTTPS のリバースプロキシ（Caddy・nginx など）を置き、
+#   https://files.example.com  → app:8080
+#   https://office.example.com → office:80
+# へ振り分けることを想定しています。値はすべて例です。.env に書いて `docker compose --env-file .env -f deploy/docker-compose.example.yml up -d`。
+#
+# アプリのイメージは scripts/dist.sh のあと `docker build -f deploy/docker/app.Dockerfile -t skawau-app .` で作ります。
+name: skawau
+services:
+  app:
+    image: skawau-app
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/skawau
+      DATABASE_USER: skawau
+      DATABASE_PASSWORD: ${DB_PASSWORD}
+      PUBLIC_URL: https://files.example.com
+      APP_SECRET: ${APP_SECRET}                    # openssl rand -base64 32
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      ADMIN_GROUPS: skawau-admins
+      S3_ENDPOINT: http://s3:3900
+      S3_BUCKET: skawau
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      ONLYOFFICE_URL: https://office.example.com     # ブラウザから
+      ONLYOFFICE_INTERNAL_URL: http://office          # アプリから（同じ Docker のネットワーク）
+      ONLYOFFICE_APP_URL: http://app:8080             # Document Server から
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
+      DEFAULT_QUOTA_MB: "51200"
+      NODE_ID: app1
+    ports: ["127.0.0.1:8080:8080"]
+  db:
+    image: groonga/pgroonga:4.1.0-alpine-17-slim
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: skawau
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: skawau
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "skawau"]
+      interval: 5s
+      retries: 30
+  s3:
+    build: { context: ./docker, dockerfile: scalas3.Dockerfile }
+    image: skawau-scalas3
+    restart: unless-stopped
+    environment:
+      SCALAS3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      SCALAS3_SECRET_KEY: ${S3_SECRET_KEY}
+    volumes: ["s3data:/var/lib/scalas3/data"]
+  office:
+    image: onlyoffice/documentserver:9.1
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
+      JWT_HEADER: Authorization
+      JWT_IN_BODY: "true"
+      ALLOW_PRIVATE_IP_ADDRESS: "true"   # 同じネットワークの app（プライベートアドレス）から文書を取るため
+    volumes: ["officedata:/var/www/onlyoffice/Data", "officelog:/var/log/onlyoffice"]
+    ports: ["127.0.0.1:8081:80"]
+volumes:
+  pgdata:
+  s3data:
+  officedata:
+  officelog:
