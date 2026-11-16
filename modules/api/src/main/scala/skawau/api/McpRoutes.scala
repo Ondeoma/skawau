@@ -18,6 +18,7 @@ object ApiCatalog:
   val all: List[Endpoint] = List(
     Endpoint("GET", "/api/me", "自分の情報（容量の使用量・キーのスコープ）"),
     Endpoint("PATCH", "/api/me", "自分の表示名を変える {name}"),
+    Endpoint("GET", "/api/users/{id}/avatar", "ユーザーのアイコンの画像（画面から登録したもの）"),
     Endpoint("GET", "/api/files/root", "自分のルートのフォルダとその中身"),
     Endpoint("GET", "/api/files/resolve?path=/a/b", "パス（自分のルートから）でファイル・フォルダを引く"),
     Endpoint("GET", "/api/files/{id}", "ファイル・フォルダの情報と場所"),

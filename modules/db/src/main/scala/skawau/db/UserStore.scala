@@ -22,7 +22,8 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
   def upsert(sub: String, name: String, email: Option[String], avatar: Option[String]): IO[User] = tx(
     sql"""insert into app_user (id, sub, name, email, avatar_url, last_login_at) values (${UUID.randomUUID()}, $sub, $name, $email, $avatar, now())
           on conflict (sub) do update set name = excluded.name, email = excluded.email,
-            avatar_url = coalesce(excluded.avatar_url, app_user.avatar_url), last_login_at = now()
+            avatar_url = case when app_user.avatar_key is not null then app_user.avatar_url else coalesce(excluded.avatar_url, app_user.avatar_url) end,
+            last_login_at = now()
           returning id, sub, name, email, avatar_url, is_admin, disabled, quota_bytes""".query[User].unique
   )
 
@@ -87,6 +88,18 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
         _ <- if disabled.contains(true) then sql"delete from session where user_id = $id".update.run else 0.pure[ConnectionIO]
       yield n > 0
   }
+
+  /** 画面から登録したアイコン（S3 のキー）。 */
+  def avatarKey(id: UUID): IO[Option[String]] = tx(sql"select avatar_key from app_user where id = $id".query[Option[String]].option.map(_.flatten))
+
+  /** アイコンを登録する（key が None なら外す）。前の画像は blob_trash に積んで後で消す。 */
+  def setAvatar(id: UUID, key: Option[String], url: Option[String]): IO[Unit] = tx(
+    for
+      old <- sql"select avatar_key from app_user where id = $id".query[Option[String]].option.map(_.flatten)
+      _   <- sql"update app_user set avatar_key = $key, avatar_url = $url where id = $id".update.run
+      _   <- old.traverse_(k => sql"insert into blob_trash (key) values ($k) on conflict do nothing".update.run)
+    yield ()
+  )
 
   def updateMe(id: UUID, name: Option[String]): IO[Unit] =
     name.map(_.trim).filter(_.nonEmpty).traverse_(v => tx(sql"update app_user set name = $v where id = $id".update.run))

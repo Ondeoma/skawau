@@ -142,6 +142,24 @@ class StoreSpec extends CatsEffectSuite:
     yield ()
   }
 
+  withDb("登録したアイコンは IdP のアイコンで上書きせず、差し替えた前の画像は後で消す") { e =>
+    val sub = s"test:${UUID.randomUUID()}"
+    for
+      u    <- e.users.upsert(sub, "アイコン", None, Some("https://idp.example/a.png"))
+      _    <- e.users.setAvatar(u.id, Some("avatars/k1"), Some("/api/users/x/avatar?v=1"))
+      u2   <- e.users.upsert(sub, "アイコン", None, Some("https://idp.example/b.png"))
+      _     = assertEquals(u2.avatarUrl, Some("/api/users/x/avatar?v=1"))
+      _    <- e.users.setAvatar(u.id, Some("avatars/k2"), Some("/api/users/x/avatar?v=2"))
+      _    <- e.users.setAvatar(u.id, None, None)
+      key  <- e.users.avatarKey(u.id)
+      _     = assertEquals(key, None)
+      gone <- sql"select count(*) from blob_trash where key in ('avatars/k1', 'avatars/k2')".query[Int].unique.transact(e.xa)
+      _     = assertEquals(gone, 2)
+      u3   <- e.users.upsert(sub, "アイコン", None, Some("https://idp.example/c.png"))
+      _     = assertEquals(u3.avatarUrl, Some("https://idp.example/c.png"))
+    yield ()
+  }
+
   withDb("コピーはフォルダの中身ごと、新しい ID と祖先で作る") { e =>
     for
       u    <- user(e, "コピー")

@@ -163,6 +163,13 @@ object Office {
 
 }
 
+/** 画像の加工（frontend/src/image.js）. */
+object Images {
+  /** 中央で正方形に切り取り、size px に縮めた PNG（読めない形式は元のファイル）. */
+  def squareThumb(file: dom.File, size: Int = 256): Future[dom.File] =
+    dom.window.asInstanceOf[js.Dynamic].skawauImage.squareThumb(file, size).asInstanceOf[js.Promise[dom.File]].toFuture
+}
+
 /** タブ・チップの見た目（選んでいるものに active を付ける. 画面の部品の中で呼ぶこと）. */
 object Ui {
   def active[A](cur: RV[A], v: A, base: String = ""): CRV[String] = cur.mapC(x => if (x == v) (base + " active").trim else base)

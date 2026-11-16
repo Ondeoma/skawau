@@ -5,13 +5,16 @@ import io.circe.Json
 import io.circe.syntax.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
-import org.http4s.headers.Location
+import org.http4s.headers.{`Content-Length`, `Content-Type`, Location}
+import fs2.io.file.Files
+import skawau.storage.BlobStore
 import skawau.auth.{ApiKeys, Crypto, OidcClient}
 import skawau.core.*
 import skawau.db.*
 import skawau.shared.*
 
 import java.time.Instant
+import java.util.UUID
 
 /** ログイン（OIDC・開発用）・ログアウト・画面の設定。 */
 final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: ActivityStore, office: OfficeService, val sessions: SessionAuth,
@@ -87,8 +90,28 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
   }
 
 /** 自分の情報・APIキー・通知、管理画面（ユーザー・監査ログ・統計）。 */
-final class UserRoutes(users: UserStore, nodes: NodeStore, activity: ActivityStore, files: FileService, val sessions: SessionAuth)
-    extends RouteSupport:
+final class UserRoutes(users: UserStore, nodes: NodeStore, activity: ActivityStore, files: FileService, blobs: Option[BlobStore],
+    val sessions: SessionAuth) extends RouteSupport:
+
+  private val avatarTypes    = Set("image/png", "image/jpeg", "image/gif", "image/webp")
+  private val avatarMaxBytes = 2L * 1024 * 1024
+
+  /** アイコンを差し替える（URL は画像を変えるたびに変え、ブラウザのキャッシュを効かせる）。 */
+  private def replaceAvatar(uid: UUID, key: Option[String]): IO[Unit] =
+    users.setAvatar(uid, key, key.map(_ => s"/api/users/$uid/avatar?v=${Crypto.randomToken(6)}"))
+
+  /** 本文（画像）を一時ファイルに受け取って S3 に置く。 */
+  private def storeAvatar(s: AuthSession, store: BlobStore, ct: String, body: fs2.Stream[IO, Byte]): IO[Response[IO]] =
+    Files[IO].tempFile.use { tmp =>
+      body.take(avatarMaxBytes + 1).through(Files[IO].writeAll(tmp)).compile.drain *> Files[IO].size(tmp).flatMap { size =>
+        if size > avatarMaxBytes then err(Status.PayloadTooLarge, s"画像が大きすぎます（上限 ${Bytes.format(avatarMaxBytes)}）")
+        else if size == 0 then err(Status.BadRequest, "画像が空です")
+        else
+          val key = s"avatars/${s.userId}/${UUID.randomUUID()}"
+          store.put(key, tmp, ct) *> replaceAvatar(s.userId, Some(key)) *>
+            users.find(s.userId).flatMap(u => Ok(Json.obj("avatarUrl" -> u.flatMap(_.avatarUrl).asJson)))
+      }
+    }
 
   private def me(s: AuthSession): IO[MeDto] =
     files.quota(s.user).map(q => MeDto(s.user.id, s.user.name, s.user.email, s.user.avatarUrl, s.isAdmin, s.viaString, s.scopeStrings, q))
@@ -98,6 +121,33 @@ final class UserRoutes(users: UserStore, nodes: NodeStore, activity: ActivitySto
 
     case req @ PATCH -> Root / "api" / "me" =>
       authed(req)(s => body[UpdateMeReq](req)(r => users.updateMe(s.userId, r.name) *> NoContent()))
+
+    // ---------------------------------------------------------------- アイコン（本文が画像そのもの）
+
+    case req @ PUT -> Root / "api" / "me" / "avatar" =>
+      sessionOnly(req) { s =>
+        val ct = req.contentType.map(c => s"${c.mediaType.mainType}/${c.mediaType.subType}").getOrElse("")
+        blobs match
+          case None                             => err(Status.ServiceUnavailable, "画像の保存先（S3）が設定されていません")
+          case Some(_) if !avatarTypes(ct)      => err(Status.BadRequest, "PNG・JPEG・GIF・WebP の画像を選んでください")
+          case Some(store)                      => storeAvatar(s, store, ct, req.body)
+      }
+
+    case req @ DELETE -> Root / "api" / "me" / "avatar" =>
+      sessionOnly(req)(s => replaceAvatar(s.userId, None) *> NoContent())
+
+    case req @ GET -> Root / "api" / "users" / UuidVar(id) / "avatar" =>
+      authed(req)(_ => users.avatarKey(id).map(k => (k, blobs)).flatMap {
+        case (Some(key), Some(store)) => store.get(key).flatMap {
+            case None => err(Status.NotFound, "画像が見つかりません")
+            case Some((meta, bytes)) =>
+              val mt = MediaType.parse(meta.contentType).toOption.filter(m => avatarTypes(s"${m.mainType}/${m.subType}")).getOrElse(MediaType.image.png)
+              IO.pure(Response[IO](Status.Ok).withBodyStream(bytes)
+                .putHeaders(`Content-Type`(mt), `Content-Length`.unsafeFromLong(meta.size), "X-Content-Type-Options" -> "nosniff",
+                  "Cache-Control" -> "private, max-age=86400"))
+          }
+        case _ => err(Status.NotFound, "画像が登録されていません")
+      })
 
     // ---------------------------------------------------------------- APIキー（アプリパスワード。画面からのみ）
 

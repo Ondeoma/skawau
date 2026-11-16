@@ -44,7 +44,8 @@ skawau は、クラウドストレージ（ファイルの保存・共有・Offi
 
 詳細は `modules/db/src/main/resources/db/migration`。
 
-- `app_user(id, sub, name, email, avatar_url, is_admin, disabled, quota_bytes, …)`、`user_group`・`group_member`（IdP の groups クレームから同期）
+- `app_user(id, sub, name, email, avatar_url, avatar_key, is_admin, disabled, quota_bytes, …)`
+  … `avatar_key` は画面から登録したアイコン（S3 の `avatars/<ユーザーID>/<UUID>`）。登録している間はログイン時に IdP のアイコンで上書きしない、`user_group`・`group_member`（IdP の groups クレームから同期）
 - `session`、`login_state`、`api_key(id, user_id, name, prefix, key_hash, scopes, expires_at, last_used_at, revoked_at)`
 - `node(id, owner_id, parent_id, ancestors uuid[], name, is_dir, size, content_type, blob_key, sha256, etag, version, created_at, updated_at,
   modified_by, deleted_at, deleted_by, trash_path)`
@@ -66,7 +67,7 @@ skawau は、クラウドストレージ（ファイルの保存・共有・Offi
   共有の相手に知らせる範囲・アクティビティに出す範囲を決める。所有者以外にはパス（共有の起点より上のフォルダ名）を見せない。
 - `notification`、`job_lock`、`audit_log`
 
-ファイルの中身は S3 に `files/<UUID>` のキーで置く（中身ごとにキーを分け、重複排除はしない。コピー・版の復元は S3 の複製）。
+ファイルの中身は S3 に `files/<UUID>` のキーで置く（アイコンは `avatars/…`。差し替えた前の画像も `blob_trash` から消す）（中身ごとにキーを分け、重複排除はしない。コピー・版の復元は S3 の複製）。
 
 ## 4. 認証・権限
 
@@ -118,7 +119,8 @@ skawau は、クラウドストレージ（ファイルの保存・共有・Offi
   専用のツール（list_folder・read_file・write_file・move・share など）と、「ユーザーができることはすべて」を保証する `list_api_endpoints`・`call_api` を持つ。
 - どのツールも内部で REST API を同じキーで呼ぶ（`X-Skawau-Mcp` ヘッダーを付ける）ので、権限・スコープ・監査は REST API と同じになり、変更履歴の経路は `mcp` になる。
 - `read_file` は docx・xlsx・pptx から文字だけを取り出す（`OfficeText`。DOCTYPE を拒否して XXE を防ぎ、部品の大きさに上限を設ける）。
-- 外部のサービスとの連携（OAuth）で発行したキーは WebDAV に使えない。
+- 外部のサービスとの連携（OAuth）で発行したキーは WebDAV に使えない。スコープはサービスごとに許したもの（`OAUTH_CLIENTS` の `scopes`。既定は read）。
+  skaka（Web 会議）には write を許し、会議の録画を本人のルートの「skaka 録画」に置かせ、参加者（`POST /api/users/lookup` でメールアドレスから引く）と共有させる。
 
 ## 9. 画面の自動同期（SSE）
 

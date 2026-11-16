@@ -135,7 +135,7 @@ object Main extends IOApp.Simple:
         rest =
           healthRoutes(xa, cfg.nodeId) <+>
             new AuthRoutes(oidc, users, activity, office, sess, cfg.api).routes <+>
-            new UserRoutes(users, nodes, activity, files, sess).routes <+>
+            new UserRoutes(users, nodes, activity, files, blobs, sess).routes <+>
             new OfficeRoutes(office, files, nodes, sess).routes <+>
             new FileRoutes(files, nodes, shares, activity, users, sess, cfg.api).routes <+>
             new PublicRoutes(files, nodes, shares, activity, office, sess, cfg.api).routes <+>

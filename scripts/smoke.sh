@@ -148,6 +148,15 @@ code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: applica
 [ "$code" = 401 ] && ok "キーなしは 401" || ng "MCP 認証 $code"
 [ "$(curl -sS "$BASE/api/endpoints" | j "len(d)")" -ge 30 ] && ok "API の一覧（/api/endpoints）" || ng "endpoints"
 
+echo "アイコン"
+printf '\x89PNG\r\n\x1a\n' > "$WORK/a.png"; printf 'IHDR' >> "$WORK/a.png"
+AV=$(call "$A" -X PUT -H 'Content-Type: image/png' --data-binary @"$WORK/a.png" "$BASE/api/me/avatar" | j "d['avatarUrl']")
+[ "$(call "$B" "$BASE$AV" | head -c 4 | tail -c 3)" = PNG ] && ok "登録したアイコンをほかの人が見られる" || ng "アイコン $AV"
+code=$(call "$A" -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: image/svg+xml' --data-binary '<svg/>' "$BASE/api/me/avatar")
+[ "$code" = 400 ] && ok "SVG は受け付けない" || ng "SVG $code"
+call "$A" -X DELETE "$BASE/api/me/avatar" >/dev/null
+[ "$(call "$A" "$BASE/api/me" | j "d['avatarUrl']")" = None ] && ok "アイコンを外せる" || ng "外す"
+
 echo "後片付け"
 call "$A" -H 'Content-Type: application/json' -d "{\"ids\":[\"$DIR\"]}" "$BASE/api/files/delete" >/dev/null
 call "$A" -X DELETE "$BASE/api/trash" >/dev/null

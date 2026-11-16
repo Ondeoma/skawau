@@ -21,6 +21,7 @@ ONLYOFFICE と連携して、Word・Excel・PowerPoint の文書をブラウザ�
   共有されたとき・リンクからアップロードされたときの通知
 - **自動同期**: 変更はサーバーから画面へ即座に知らせる（Server-Sent Events）。ほかの人が共有のフォルダに置いたファイルもすぐ一覧に出る
 - **WebDAV**: `/dav/` に、Finder・エクスプローラー・Cyberduck・rclone などからアプリパスワードで接続できる（削除はごみ箱へ、上書きは新しい版）
+- **アイコン**: 個人設定で画像を登録できる（正方形に切り取って縮める）。登録しない人は IdP のアイコンか名前の1文字目
 - **容量の上限**: 既定の上限（`DEFAULT_QUOTA_MB`）と、ユーザーごとの上限（管理画面）
 - **認証・権限**: OIDC、システム管理者・一般。管理者でもほかの人のファイルの中身は見られない（共有されたものだけ）
 - **API・MCP**: ユーザーごとのスコープ付き APIキー（アプリパスワード）で REST API を呼べる（一覧は `GET /api/endpoints`）。
@@ -102,7 +103,7 @@ Docker で動かす例（アプリ・DB・S3 互換ストレージ・ONLYOFFICE�
 | `TRASH_DAYS` | ごみ箱のものを完全に削除するまでの日数（既定 30） |
 | `STATIC_DIR` | ビルド済みの画面（`dist/static`） |
 | `NODE_ID` | ノード名（ログ・定期処理のリース） |
-| `OAUTH_CLIENTS` | 認可を求める外部のサービス（skea・skiwi）。`[{"id":"skea","secret":"…（16文字以上）","redirectUri":"https://…/api/integrations/skawau/callback","name":"skea"}]` |
+| `OAUTH_CLIENTS` | 認可を求める外部のサービス（skea・skiwi・skaka）。`[{"id":"skea","secret":"…（16文字以上）","redirectUri":"https://…/api/integrations/skawau/callback","name":"skea"}]`。`scopes`（既定 `["read"]`）で求めてよいスコープを決める（skaka は `["read","write"]`） |
 | `DEV_LOGIN` | 開発用のログインを有効にする（OIDC を設定しない場合のみ） |
 
 ## WebDAV・API・MCP
@@ -135,16 +136,20 @@ MCP のツール: `get_me`・`list_folder`・`search_files`・`get_file`・`read
 ファイルは ID か、自分のルートからのパス（`/資料/2026/報告.docx`）で指定します。どのツールも内部で REST API を同じキーで呼ぶので、権限・スコープは REST API と同じです
 （「読み取りのみ」のキーでは変更のツールは使えません）。
 
-## skea・skiwi との連携
+## skea・skiwi・skaka との連携
 
 skea・skiwi に貼った skawau のファイル・フォルダの URL（`/view/{ID}`・`/office/{ID}`・`/files/{ID}`）に、見る人の権限でファイル名を出すための仕組みです。
-取り決めは skea・skiwi の `docs/skawau-integration.md` にあります。
+取り決めは skea・skiwi の `docs/skawau-integration.md` にあります。skaka（Web 会議）は同じ仕組みで、会議の録画を本人の skawau に保存します（skaka の `docs/design.md`）。
 
-- `OAUTH_CLIENTS` に登録したサービスが、OAuth 2.0（認可コード + PKCE、S256 のみ）でユーザーごとに読み取り専用のトークンを受け取ります
-  （`/oauth/authorize`・`/oauth/token`・`/oauth/revoke`）。
-- トークンは「<サービス名> 連携」というアプリパスワードとして個人設定に表示され、そこから失効できます。WebDAV・書き込みには使えません。許可し直すと前のものは失効します。
+- `OAUTH_CLIENTS` に登録したサービスが、OAuth 2.0（認可コード + PKCE、S256 のみ）でユーザーごとにトークンを受け取ります
+  （`/oauth/authorize`・`/oauth/token`・`/oauth/revoke`）。スコープは `scope` で求めたもの（既定は `read`）で、そのサービスの `scopes` に含まれるものだけ。
+  skaka は `read write` を求め、録画を `PUT /api/files/{ルート}/upload?path=skaka 録画/…` で置き、会議の参加者と共有します。
+- トークンは「<サービス名> 連携」というアプリパスワードとして個人設定に表示され、そこから失効できます。WebDAV には使えず、書き込みは write を許したサービスだけです。許可し直すと前のものは失効します。
 - `POST /api/files/lookup {"ids":[…]}`（100件まで）で、見られるもの（自分のもの・共有されたもの）だけ
   `{"files":[{"id","name","folder","isDir","mimeType"}]}` を返します（ごみ箱・存在しない・権限なしは区別せず返さない）。
+- `POST /api/users/lookup {"emails":[…]}`（100件まで）で、メールアドレスが完全に一致する（大文字・小文字は区別しない）ユーザーを
+  `{"users":[{"id","name","email"}]}` で返します（skaka が録画を参加者と共有するため）。
 - 開発用の値（`scripts/dev-env.sh`）: skea は `skea` / `skea-dev-secret-0123456789` / `http://localhost:8090/api/integrations/skawau/callback`、
-  skiwi は `skiwi` / `skiwi-dev-secret-0123456789` / `http://localhost:8080/api/integrations/skawau/callback`。
+  skiwi は `skiwi` / `skiwi-dev-secret-0123456789` / `http://localhost:8080/api/integrations/skawau/callback`、
+  skaka は `skaka` / `skaka-dev-secret-0123456789` / `http://localhost:5177/api/integrations/skawau/callback`（`read write`）。
   連携元に入れる skawau の URL は `http://localhost:5176`（Vite が `/oauth`・`/api` を :8092 へ中継し、127.0.0.1 で待ち受ける）。

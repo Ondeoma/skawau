@@ -115,6 +115,9 @@ object Api {
       "returnTo" -> returnTo.asJson))
   def logout(): Future[Unit] = postUnit("/auth/logout")
   def updateMe(name: String): Future[Unit] = patchUnit("/api/me", UpdateMeReq(Some(name)).asJson)
+  /** アイコンの画像を登録する（本文が画像そのもの）. */
+  def setAvatar(file: dom.Blob): Future[io.circe.Json] = upload[io.circe.Json]("/api/me/avatar", file, (_, _) => ())._1
+  def removeAvatar(): Future[Unit] = delete("/api/me/avatar")
   def apiKeys(): Future[List[ApiKeyDto]] = get[List[ApiKeyDto]]("/api/me/api-keys")
   def createApiKey(r: CreateApiKeyReq): Future[CreatedApiKeyDto] = post[CreatedApiKeyDto]("/api/me/api-keys", r.asJson)
   def revokeApiKey(id: UUID): Future[Unit] = delete(s"/api/me/api-keys/$id")
