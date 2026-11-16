@@ -40,6 +40,7 @@ object ApiCatalog:
     Endpoint("GET", "/api/files/{id}/activity", "ファイル・フォルダ（中身を含む）の変更履歴"),
     Endpoint("GET", "/api/files/{id}/office", "ONLYOFFICE のエディタの設定"),
     Endpoint("POST", "/api/files/lookup", "ID からまとめて名前を引く {ids}（読み取り専用のキーで使える）"),
+    Endpoint("POST", "/api/users/lookup", "メールアドレスが完全に一致するユーザーを引く {emails}（読み取り専用のキーで使える）"),
     Endpoint("GET", "/api/recent?limit=", "最近更新したファイル"),
     Endpoint("GET", "/api/favorites", "お気に入り"),
     Endpoint("GET", "/api/search?q=", "名前で検索（日本語の部分一致）"),

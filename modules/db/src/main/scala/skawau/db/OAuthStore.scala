@@ -38,3 +38,8 @@ final class OAuthStore(xa: Transactor[IO]) extends TxStore(xa):
   def revokeKey(hash: Array[Byte], clientId: String): IO[Unit] = tx(
     sql"update api_key set revoked_at = now() where key_hash = $hash and oauth_client = $clientId and revoked_at is null".update.run.void
   )
+
+  /** メールアドレス（小文字）が一致する、使えるユーザー（id・名前・メールアドレス）。 */
+  def usersByEmail(emails: List[String]): IO[List[(UUID, String, String)]] =
+    if emails.isEmpty then IO.pure(Nil)
+    else tx(sql"""select id, name, email from app_user where not disabled and lower(email) = any(${emails.toArray})""".query[(UUID, String, String)].to[List])

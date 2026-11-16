@@ -41,8 +41,11 @@ final case class ApiConfig(
     oauthClients: List[OAuthClient] = Nil
 )
 
-/** 認可を求める外部のサービス（OAUTH_CLIENTS で登録する）。redirectUri は完全一致で照合する。 */
-final case class OAuthClient(id: String, secret: String, redirectUri: String, name: String)
+/**
+ * 認可を求める外部のサービス（OAUTH_CLIENTS で登録する）。redirectUri は完全一致で照合する。
+ * scopes はそのサービスが求めてよいスコープ（read のほか、ファイルを置くサービス（skaka の録画）には write）。
+ */
+final case class OAuthClient(id: String, secret: String, redirectUri: String, name: String, scopes: List[String] = List("read"))
 
 /** 処理の失敗（HTTP の応答に変換する）。 */
 enum Fail:
@@ -149,7 +152,7 @@ trait RouteSupport extends Http4sDsl[IO]:
 
 
   /** POST だが読み取りだけの API（本文で条件を送るもの）。 */
-  private val readOnlyPosts = Set("/api/files/lookup")
+  private val readOnlyPosts = Set("/api/files/lookup", "/api/users/lookup")
   private def readOnlyPost(req: Request[IO]): Boolean = req.method == Method.POST && readOnlyPosts.contains(req.pathInfo.renderString)
 
   /** ログインしていなければ 401。更新系の要求を read スコープのキーで送ったら 403。 */

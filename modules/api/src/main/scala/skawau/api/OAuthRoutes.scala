@@ -16,7 +16,8 @@ import java.time.Instant
 /**
  * 外部のサービス（skea など）への認可（OAuth 2.0 の認可コード + PKCE。RFC 6749・7636・7009）と、ファイル名の一括参照。
  * 取り決めは skea・skiwi の docs/skawau-integration.md。
- * 発行するトークンは、そのユーザーのスコープ read の API キー（「<クライアント名> 連携」。API キーの画面から失効できる）。
+ * 発行するトークンは、そのユーザーの API キー（「<クライアント名> 連携」。API キーの画面から失効できる）。スコープは求められたもの
+ * （既定は read。write はそのクライアントに許したときだけ。skaka は録画を置くために write を求める）。
  */
 final class OAuthRoutes(oauth: OAuthStore, nodes: NodeStore, activity: ActivityStore, val sessions: SessionAuth, cfg: ApiConfig)
     extends RouteSupport:
@@ -60,6 +61,10 @@ final class OAuthRoutes(oauth: OAuthStore, nodes: NodeStore, activity: ActivityS
   private def errorPage(msg: String): IO[Response[IO]] =
     page("認可できません", s"<h1>認可できません</h1><p>${Html.escape(msg)}</p><p class=\"muted\">連携元のサービスの設定を確認してください。</p>").map(_.withStatus(Status.BadRequest))
 
+  /** 求められたスコープ（空白区切り。省略すると read）。 */
+  private def scopes(p: String => Option[String]): List[String] =
+    p("scope").map(_.split(' ').toList.map(_.trim).filter(_.nonEmpty).distinct).filter(_.nonEmpty).getOrElse(List(ApiScope.Read))
+
   /** 認可の要求の確認（client_id・redirect_uri が不正ならリダイレクトしない）。 */
   private def validate(p: String => Option[String]): Either[IO[Response[IO]], (OAuthClient, String, Option[String], String)] =
     (p("client_id").flatMap(client), p("redirect_uri")) match
@@ -70,7 +75,7 @@ final class OAuthRoutes(oauth: OAuthStore, nodes: NodeStore, activity: ActivityS
         if !p("response_type").contains("code") then Left(back(c.redirectUri, "error" -> Some("unsupported_response_type"), "state" -> state))
         else if !p("code_challenge_method").contains("S256") || !p("code_challenge").exists(_.matches("^[A-Za-z0-9_-]{43}$")) then
           Left(back(c.redirectUri, "error" -> Some("invalid_request"), "error_description" -> Some("PKCE（S256）が必要です"), "state" -> state))
-        else if p("scope").exists(_.split(' ').exists(_ != "read")) then Left(back(c.redirectUri, "error" -> Some("invalid_scope"), "state" -> state))
+        else if !scopes(p).forall(c.scopes.contains) then Left(back(c.redirectUri, "error" -> Some("invalid_scope"), "state" -> state))
         else Right((c, c.redirectUri, state, p("code_challenge").get))
 
   // ---------------------------------------------------------------- トークンの発行・失効（クライアント認証は Basic）
@@ -104,10 +109,14 @@ final class OAuthRoutes(oauth: OAuthStore, nodes: NodeStore, activity: ActivityS
               val csrf = Crypto.randomToken(24)
               val hidden = List("client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "response_type", "scope")
                 .flatMap(k => param(req, k).map(v => s"""<input type="hidden" name="$k" value="${Html.escape(v)}">""")).mkString
-              val name = Html.escape(c.name)
+              val name  = Html.escape(c.name)
+              val write = scopes(param(req, _)).contains(ApiScope.Write)
+              val what  = if write then "skawau のファイルを読み書き" else "skawau のファイル名を読み取り"
+              val scope = if write then "<li>ファイル・フォルダの作成・アップロード・変更・共有ができます（WebDAV には使えません）</li>"
+                          else "<li>読み取りだけです（作成・変更・削除はしません）</li>"
               page(s"$name との連携", s"""<h1>$name との連携</h1>
-                |<p><b>$name</b> が、あなた（${Html.escape(s.user.name)}）の権限で skawau のファイル名を読み取ります。</p>
-                |<ul class="muted"><li>読み取りだけです（作成・変更・削除はしません）</li><li>あなたが見られるファイル・フォルダ（自分のもの・共有されたもの）だけが対象です</li>
+                |<p><b>$name</b> が、あなた（${Html.escape(s.user.name)}）の権限で${what}します。</p>
+                |<ul class="muted">$scope<li>あなたが見られるファイル・フォルダ（自分のもの・共有されたもの）だけが対象です</li>
                 |<li>個人設定の「アプリパスワード（APIキー）」から、いつでも連携をやめられます</li></ul>
                 |<form method="post" action="/oauth/authorize">$hidden<input type="hidden" name="csrf" value="$csrf">
                 |<div class="actions"><button type="submit" name="decision" value="deny">拒否する</button>
@@ -128,7 +137,7 @@ final class OAuthRoutes(oauth: OAuthStore, nodes: NodeStore, activity: ActivityS
               case Some(_) if !csrfOk => errorPage("画面の有効期限が切れました。連携元の画面からやり直してください")
               case Some(s) if p("decision").contains("allow") =>
                 val code = Crypto.randomToken(32)
-                oauth.createCode(Crypto.sha256(code), OAuthCode(c.id, redirect, s.user.id, challenge, "read"), Instant.now().plusSeconds(CodeTtlSeconds)) *>
+                oauth.createCode(Crypto.sha256(code), OAuthCode(c.id, redirect, s.user.id, challenge, scopes(p).mkString(" ")), Instant.now().plusSeconds(CodeTtlSeconds)) *>
                   activity.audit(Some(s.user.id), "web", "oauth.authorize", Some(c.id), Json.obj()) *>
                   back(redirect, "code" -> Some(code), "state" -> state)
               case Some(_) => back(redirect, "error" -> Some("access_denied"), "state" -> state)
@@ -147,7 +156,8 @@ final class OAuthRoutes(oauth: OAuthStore, nodes: NodeStore, activity: ActivityS
                 oauth.consumeCode(Crypto.sha256(code)).flatMap {
                   case Some(oc) if oc.clientId == c.id && oc.redirectUri == uri && Crypto.constantTimeEquals(oc.codeChallenge, Crypto.pkceChallenge(verifier)) =>
                     val (key, prefix) = ApiKeys.generate()
-                    oauth.replaceKey(oc.userId, c.id, s"${c.name} 連携", prefix, Crypto.sha256(key), List(ApiScope.Read)) *>
+                    oauth.replaceKey(oc.userId, c.id, s"${c.name} 連携", prefix, Crypto.sha256(key),
+                      oc.scope.split(' ').toList.filter(c.scopes.contains)) *>
                       activity.audit(Some(oc.userId), "oauth", "api_key.create", Some(c.id), Json.obj("client" -> c.id.asJson)) *>
                       Ok(Json.obj("access_token" -> key.asJson, "token_type" -> "Bearer".asJson, "scope" -> oc.scope.asJson))
                         .map(_.putHeaders("Cache-Control" -> "no-store", "Pragma" -> "no-cache"))
@@ -171,5 +181,15 @@ final class OAuthRoutes(oauth: OAuthStore, nodes: NodeStore, activity: ActivityS
           // folder は skea、isDir・mimeType は skiwi の取り決め（同じ意味）
           Ok(Json.obj("files" -> rows.map((id, name, dir, ct) =>
             Json.obj("id" -> id.asJson, "name" -> name.asJson, "folder" -> dir.asJson, "isDir" -> dir.asJson, "mimeType" -> ct.asJson)).asJson)))
+      })
+
+    // ---------------------------------------------------------------- メールアドレスでユーザーを引く（skaka の録画を会議の参加者と共有する）
+    // 完全一致（大文字・小文字は区別しない）だけ。部分一致の候補は共有の画面（/api/sharees）と同じく誰でも引けるので、新たに見せるものはない
+    case req @ POST -> Root / "api" / "users" / "lookup" =>
+      authed(req)(_ => body[Json](req) { j =>
+        val emails = j.hcursor.get[List[String]]("emails").getOrElse(Nil).map(_.trim.toLowerCase).filter(_.contains("@")).distinct
+        if emails.size > 100 then err(Status.BadRequest, "emails は100件までです")
+        else oauth.usersByEmail(emails).flatMap(rows =>
+          Ok(Json.obj("users" -> rows.map((id, name, email) => Json.obj("id" -> id.asJson, "name" -> name.asJson, "email" -> email.asJson)).asJson)))
       })
   }

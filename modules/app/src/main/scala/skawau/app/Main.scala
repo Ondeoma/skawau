@@ -50,15 +50,16 @@ object Config:
             Right(Some(OfficeConfig(url.stripSuffix("/"), opt("ONLYOFFICE_INTERNAL_URL").getOrElse(url).stripSuffix("/"),
               opt("ONLYOFFICE_APP_URL").getOrElse(pub).stripSuffix("/"), sec)))
 
-  /** OAUTH_CLIENTS: [{"id":"skea","secret":"…","redirectUri":"https://…/callback","name":"skea"}] */
+  /** OAUTH_CLIENTS: [{"id":"skea","secret":"…","redirectUri":"https://…/callback","name":"skea","scopes":["read"]}]（scopes は省略すると read だけ） */
   private def oauthClients: Either[String, List[OAuthClient]] =
     opt("OAUTH_CLIENTS").fold(Right(Nil)) { s =>
       io.circe.parser.parse(s).flatMap(_.as[List[io.circe.Json]]).left.map(_ => "OAUTH_CLIENTS は JSON の配列で指定してください").flatMap(_.traverse { j =>
         val c = j.hcursor
         (c.get[String]("id"), c.get[String]("secret"), c.get[String]("redirectUri")).tupled.toOption
           .filter((id, sec, uri) => id.nonEmpty && sec.length >= 16 && (uri.startsWith("https://") || uri.startsWith("http://localhost")))
-          .map((id, sec, uri) => OAuthClient(id, sec, uri, c.get[String]("name").getOrElse(id)))
-          .toRight("OAUTH_CLIENTS の各要素には id・secret（16文字以上）・redirectUri（https://）を指定してください")
+          .map((id, sec, uri) => OAuthClient(id, sec, uri, c.get[String]("name").getOrElse(id), c.get[List[String]]("scopes").getOrElse(List("read"))))
+          .filter(c => c.scopes.nonEmpty && c.scopes.forall(Set("read", "write")))
+          .toRight("OAUTH_CLIENTS の各要素には id・secret（16文字以上）・redirectUri（https://）を指定してください（scopes は read・write）")
       })
     }
 
