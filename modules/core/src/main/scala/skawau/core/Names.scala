@@ -15,8 +15,16 @@ object Names:
     if name.isEmpty then Some("名前を入力してください")
     else if name.length > MaxLength then Some(s"名前は${MaxLength}文字以内にしてください")
     else if name == "." || name == ".." then Some("その名前は使えません")
-    else if name.exists(c => c == '/' || c == '\\' || c.isControl) then Some("名前に / \\ や制御文字は使えません")
+    else if name.exists(c => c == '/' || c == '\\' || c.isControl || Bidi(c)) then Some("名前に / \\ や制御文字は使えません")
     else None
+
+  /** 文字の向きを変える制御文字（「txt.exe」を「exe.txt」に見せる偽装に使われる）。 */
+  private val Bidi: Set[Char] = Set('\u061c', '\u200e', '\u200f') ++ ('\u202a' to '\u202e') ++ ('\u2066' to '\u2069')
+
+  /** ZIP の中のパスに使える形（万一 / や .. を含む名前があっても、展開先の外へ出ないようにする）。 */
+  def zipSegment(name: String): String =
+    val s = name.map(c => if c == '/' || c == '\\' || c.isControl then '_' else c)
+    if s.isEmpty || s == "." || s == ".." then "_" else s
 
   /** 同じ名前があるときの別名（「名前 (2).txt」「名前 (3).txt」…）。taken は小文字で比べる。 */
   def unique(name: String, taken: Set[String]): String =

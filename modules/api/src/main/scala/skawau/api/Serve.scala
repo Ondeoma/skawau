@@ -31,6 +31,8 @@ object Serve:
   /**
    * 中身を返す。download なら保存させる（attachment）。HTML・SVG などスクリプトを含み得る形式は、表示の指定でも保存させる。
    * PDF 以外は CSP の sandbox を付け、万一表示されてもスクリプトを動かさない。
+   * Content-Type は保存した値（アップロードしたときの名前から決めたもの）を信用せず、いまの名前から決める
+   * （HTML を上げてから名前を .pdf に変えると、HTML が CSP なしで表示されてしまうため）。
    */
   def node(req: Request[IO], files: FileService, n: Node, download: Boolean, head: Boolean = false): IO[Response[IO]] =
     val tag = etag(n)
@@ -40,7 +42,7 @@ object Serve:
       case Some(key) =>
         val range = parseRange(req.headers.get(CIString("Range")).map(_.head.value), n.size).filter(_ => n.size > 0)
         val inline = !download && FileKind.inlineSafe(n.name)
-        val ct     = if inline then n.contentType.getOrElse(FileKind.contentType(n.name)) else FileKind.contentType(n.name)
+        val ct     = FileKind.contentType(n.name)
         val common = List[Header.ToRaw](
           "ETag"                   -> tag,
           "Last-Modified"          -> httpDate.format(n.updatedAt),

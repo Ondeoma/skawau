@@ -2,6 +2,7 @@
 
 skawau は、クラウドストレージ（ファイルの保存・共有・Office 文書の編集）に機能を絞った、チームのためのファイル共有システムです。
 兄弟プロジェクトの skea（タスク管理）・skiwi（Wiki）と同じ技術・同じ運用方針で作ります。
+skea・skiwi・skaka（Web 会議）とは OAuth で連携します（8章）。
 
 ## 1. 要件サマリ
 
@@ -72,7 +73,10 @@ skawau は、クラウドストレージ（ファイルの保存・共有・Offi
 ## 4. 認証・権限
 
 - **ログイン**: OIDC（Authorization Code + PKCE）。ID token の `iss`/`aud`/`exp`/`nonce` を検証（skea・skiwi と同じ）。
-  IdP 未設定の開発環境では `DEV_LOGIN=true` で名前だけのログインを許可する。
+  `state` はログインを始めたブラウザの Cookie と照合する（他人が始めたログインの callback を踏ませる攻撃を防ぐ）。
+  IdP 未設定の開発環境では `DEV_LOGIN=true` で名前だけのログインを許可する（`APP_SECRET` の固定の既定値も、OIDC も https もないときだけ）。
+- **CSRF**: セッションの Cookie は SameSite=Lax。加えて Cookie での更新系の要求は `Sec-Fetch-Site`（なければ `Origin`）で同じオリジンからのものだけを受け付ける
+  （同じサイトの別のサブドメインからの送信も拒む）。全応答に `X-Frame-Options: SAMEORIGIN`・`frame-ancestors 'self'`・`nosniff`・`Referrer-Policy` を付ける。
 - **APIキー（アプリパスワード）**: `skawau_` で始まるランダム値。ハッシュのみ保存。REST は `Authorization: Bearer`、WebDAV は Basic のパスワード。
   スコープは `read` / `write` / `admin`。キーでキーの発行・失効はできない。WebDAV は Cookie を受け付けない（CSRF を避ける）。
 - **ファイルの権限**（実効の権限 = 所有者 > 編集可 > 閲覧のみ）:
@@ -81,14 +85,18 @@ skawau は、クラウドストレージ（ファイルの保存・共有・Offi
   - **名前の変更・移動・削除は「親フォルダ」の編集権限**が必要。共有された起点そのものは、受け取った人が消したり動かしたりできない
     （共有された人は起点の親を見られないため、この規則だけで決まる）。
   - 共有の作成・変更は所有者だけ（再共有はしない）。
+  - 所有者の違うフォルダへの移動は所有者ごと移るので、自分のものだけ（ほかの人のものはコピーする）。中のごみ箱にあるものは元の所有者のルートの下へ外して残し、
+    共有・リンクは新しい所有者のものにする。容量には以前の版も数える。
 - **公開リンク**: トークン（推測できない 18 バイトの乱数）で起点と、その子孫だけを扱える。パスワードつきのリンクは PBKDF2 で照合し、
-  そのリンクのパスだけに効く署名つき Cookie（24時間）を渡す。`upload` のリンクは中身の一覧・ダウンロードを返さない。
+  そのリンクのパスだけに効く署名つき Cookie（24時間。パスワードを変えると無効）を渡す。間違いはリンクごとに15分で10回まで、
+  PBKDF2 の計算は同時に4つまで（ノードごと）。`upload` のリンクは中身の一覧・ダウンロードを返さない。
   リンクからの操作は変更履歴に `via = link` として残し、アップロードは所有者に通知する。
 
 ## 5. ファイルの取り出し（REST・公開リンク・WebDAV で共通）
 
 - Range（1つの範囲）に対応（動画のシーク）。`ETag`（中身の etag と版）で条件付き GET（304）。
 - 表示（inline）は画像・動画・音声・PDF・テキストだけ。HTML・SVG などスクリプトを含み得る形式は、表示の指定でも保存させる（attachment）。
+  `Content-Type` はいまの名前から決める（HTML を上げてから名前を .pdf に変えても、HTML として表示されない）。
   PDF 以外には `Content-Security-Policy: sandbox` を付け、万一表示されてもスクリプトを動かさない。`X-Content-Type-Options: nosniff`。
 - フォルダ・複数選択は ZIP にまとめてストリームで返す（S3 から順に読みながら書き出す。ファイル名は UTF-8）。
 
@@ -100,7 +108,9 @@ skawau は、クラウドストレージ（ファイルの保存・共有・Offi
    Document Server はログインなしで文書を取れる。
 3. 編集が終わる（全員が閉じる）か保存ボタン（強制保存）で、Document Server が `editorConfig.callbackUrl`
    （`/onlyoffice/callback/{id}?t=…`）に知らせる。本文の `token`（または Authorization ヘッダー）の JWT を検証し、
-   status 2・6 のときは `url` から文書を取って新しい版として保存する。`url` の Document Server の公開 URL は `ONLYOFFICE_INTERNAL_URL` に置き換えて取りに行く。
+   status 2・6 のときは `url` から文書を取って新しい版として保存する。`url` の Document Server の公開 URL は `ONLYOFFICE_INTERNAL_URL` に置き換えて取りに行き、
+   それ以外のホストへは取りに行かない。`t` には編集を許したか・誰の権限か（公開リンクはリンクの ID）・期限（7日）を入れ、
+   保存のときにその人・そのリンクにいまも編集の権限があるかを確かめ直す。`ONLYOFFICE_JWT_SECRET` は32文字以上。
 4. 文書キー（`document.key`）は「ノードID_版」。保存のたびに版が進むので、次に開くと新しい文書として扱われる。
    同時に開いている人は同じキーなので、Document Server の中で同時編集になる。
 - 編集できるのは、編集の権限があり、編集できる形式（docx・xlsx・pptx・odt・ods・odp・rtf など）のとき。古い形式（doc・xls・ppt）は閲覧のみ。

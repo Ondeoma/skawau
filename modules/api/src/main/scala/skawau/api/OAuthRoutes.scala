@@ -8,6 +8,7 @@ import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.headers.{`Content-Type`, Authorization, Location}
 import skawau.auth.{ApiKeys, Crypto}
+import skawau.core.AuthSession
 import skawau.db.*
 import skawau.shared.*
 
@@ -95,12 +96,15 @@ final class OAuthRoutes(oauth: OAuthStore, nodes: NodeStore, activity: ActivityS
       case Right(u) => f(u.values.view.mapValues(_.headOption.getOrElse("")).toMap)
     }
 
+  /** 同意は画面のログイン（Cookie のセッション）だけで受け付ける。APIキーでの同意を許すと、連携元がスコープを無断で引き上げられる。 */
+  private def browserSession(req: Request[IO]): IO[Option[AuthSession]] = sessions.fromRequest(req).map(_.filter(_.isSession))
+
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "oauth" / "authorize" =>
       validate(param(req, _)) match
         case Left(r) => r
         case Right((c, _, _, _)) =>
-          sessions.fromRequest(req).flatMap {
+          browserSession(req).flatMap {
             case None =>
               // ログインしてからこの画面に戻る
               val here = req.uri.renderString
@@ -132,7 +136,7 @@ final class OAuthRoutes(oauth: OAuthStore, nodes: NodeStore, activity: ActivityS
           case Left(r) => r
           case Right((c, redirect, state, challenge)) =>
             val csrfOk = req.cookies.find(_.name == CsrfCookie).exists(ck => p("csrf").exists(v => Crypto.constantTimeEquals(ck.content, v)))
-            sessions.fromRequest(req).flatMap {
+            browserSession(req).flatMap {
               case None => errorPage("ログインが切れました。連携元の画面からやり直してください")
               case Some(_) if !csrfOk => errorPage("画面の有効期限が切れました。連携元の画面からやり直してください")
               case Some(s) if p("decision").contains("allow") =>

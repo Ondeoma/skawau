@@ -22,7 +22,13 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
 
   /** ログイン後に戻る先（同じサイトのパスだけ）。 */
   private def safeReturn(s: Option[String]): String =
-    s.filter(p => p.startsWith("/") && !p.startsWith("//") && !p.startsWith("/\\")).getOrElse("/")
+    ReturnTo.orRoot(s.filter(p => Uri.fromString(p).isRight))
+
+  /** OIDC の state をログインを始めたブラウザに結び付ける Cookie（ほかの人が始めたログインの callback を踏ませる攻撃を防ぐ）。 */
+  private val StateCookie = "skawau_login_state"
+  private def stateCookie(value: String, maxAge: Long) =
+    ResponseCookie(StateCookie, value, maxAge = Some(maxAge), path = Some("/auth"), httpOnly = true, secure = cfg.cookieSecure,
+      sameSite = Some(SameSite.Lax))
 
   private def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] =
     val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)))
@@ -37,12 +43,15 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
       oidc match
         case Some(o) =>
           val state = Crypto.randomToken(); val verifier = Crypto.randomToken(48); val nonce = Crypto.randomToken()
-          users.saveLoginState(state, verifier, nonce, back) *> o.authorizationUri(state, verifier, nonce).flatMap(u => redirect(u.renderString))
+          users.saveLoginState(state, verifier, nonce, back) *>
+            o.authorizationUri(state, verifier, nonce).flatMap(u => redirect(u.renderString, Some(stateCookie(state, 15 * 60))))
         case None if cfg.devLogin => redirect(s"/login?returnTo=${java.net.URLEncoder.encode(back, "UTF-8")}")
         case None                 => err(Status.ServiceUnavailable, "OIDC が設定されていません")
 
     case req @ GET -> Root / "auth" / "callback" =>
       (oidc, param(req, "code"), param(req, "state")) match
+        case (Some(o), Some(_), Some(state)) if !req.cookies.find(_.name == StateCookie).exists(c => Crypto.constantTimeEquals(c.content, state)) =>
+          err(Status.BadRequest, "ログインを始めたブラウザと違います。もう一度ログインしてください")
         case (Some(o), Some(code), Some(state)) =>
           users.takeLoginState(state).flatMap {
             case None => err(Status.BadRequest, "ログインの有効期限が切れました。もう一度ログインしてください")
@@ -55,14 +64,14 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
                   for
                     u <- users.upsert(id.sub, id.name, id.email, id.picture)
                     r <- if u.disabled then err(Status.Forbidden, "このユーザーは無効にされています")
-                         else users.syncGroups(u.id, id.groups) *> loggedIn(u, "web").flatMap(c => redirect(back, Some(c)))
+                         else users.syncGroups(u.id, id.groups) *> loggedIn(u, "web").flatMap(c => redirect(back, Some(c)).map(_.addCookie(stateCookie("", 0))))
                   yield r
               }
           }
         case (None, _, _) => err(Status.ServiceUnavailable, "OIDC が設定されていません")
         case _            => err(Status.BadRequest, "code と state が必要です")
 
-    case req @ POST -> Root / "auth" / "logout" =>
+    case req @ POST -> Root / "auth" / "logout" if sameOrigin(req) =>
       sessions.revoke(req).flatMap(c => Ok(Json.obj("redirect" -> "/".asJson)).map(_.addCookie(c)))
 
     // 開発用: 名前だけでログインする（DEV_LOGIN=true のときだけ）

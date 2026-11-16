@@ -40,9 +40,11 @@ final class OfficeService(files: FileService, http: Client[IO], cfg: ApiConfig):
 
   /**
    * エディタの設定。user は (ID, 名前)。canEdit は編集を許すか（形式が編集できなければ閲覧になる）。
-   * actor は保存したときに記録する人（公開リンクは None）。
+   * actor は保存したときに記録する人（公開リンクは None で、link にリンクの共有 ID）。
+   * 保存の知らせの URL には、編集を許したか・誰の権限か・期限を入れ、保存するときに権限がまだあるかを確かめ直す。
    */
-  def config(n: Node, user: (String, String), canEdit0: Boolean, actor: Option[UUID], back: Option[String]): Res[OfficeConfigDto] =
+  def config(n: Node, user: (String, String), canEdit0: Boolean, actor: Option[UUID], back: Option[String],
+      link: Option[UUID] = None): Res[OfficeConfigDto] =
     (cfg.office, FileKind.officeType(n.name)) match
       case (None, _) => IO.pure(Left(Fail.Invalid("ONLYOFFICE が設定されていません（ONLYOFFICE_URL）")))
       case (_, None) => IO.pure(Left(Fail.Invalid("ONLYOFFICE で開けない形式です")))
@@ -50,7 +52,9 @@ final class OfficeService(files: FileService, http: Client[IO], cfg: ApiConfig):
         val canEdit = canEdit0 && FileKind.officeEditable(n.name)
         val exp     = Instant.now().plusSeconds(6 * 3600).getEpochSecond
         val dl      = s"${appUrl(o)}/onlyoffice/download/${n.id}?t=${urlToken("fid" -> n.id.asJson, "exp" -> exp.asJson)}"
-        val cb      = s"${appUrl(o)}/onlyoffice/callback/${n.id}?t=${urlToken("fid" -> n.id.asJson, "actor" -> actor.asJson)}"
+        val cbExp   = Instant.now().plusSeconds(7 * 86400).getEpochSecond
+        val cb      = s"${appUrl(o)}/onlyoffice/callback/${n.id}?t=${urlToken("fid" -> n.id.asJson, "actor" -> actor.asJson, "sid" -> link.asJson,
+                        "edit" -> canEdit.asJson, "exp" -> cbExp.asJson)}"
         val body = Json.obj(
           "document" -> Json.obj(
             "fileType" -> FileKind.ext(n.name).asJson,
@@ -110,9 +114,17 @@ final class OfficeService(files: FileService, http: Client[IO], cfg: ApiConfig):
     if pub != int && url.startsWith(pub) then int + url.drop(pub.length) else url
   }
 
+  /** 取りに行ってよい URL か（Document Server のものだけ。ほかのホスト・内部のアドレスへの要求に使わせない）。 */
+  private def fromDocumentServer(uri: Uri): Boolean = cfg.office.exists { o =>
+    def origin(u: Uri) =
+      val scheme = u.scheme.map(_.value.toString.toLowerCase)
+      (scheme, u.host.map(_.value.toLowerCase), u.port.orElse(scheme.map(s => if s == "https" then 443 else 80)))
+    Uri.fromString(o.internalUrl).toOption.exists(i => origin(i) == origin(uri))
+  }
+
   /** 編集した文書を取り込む（新しい版）。 */
   def save(n: Node, url: String, actor: Actor): Res[Node] =
-    Uri.fromString(internal(url)).left.map(e => Fail.Invalid(e.message)) match
+    Uri.fromString(internal(url)).left.map(e => Fail.Invalid(e.message)).filterOrElse(fromDocumentServer, Fail.Invalid("Document Server 以外の URL です")) match
       case Left(f) => IO.pure(Left(f))
       case Right(uri) =>
         http.run(Request[IO](Method.GET, uri)).use { resp =>
@@ -120,7 +132,21 @@ final class OfficeService(files: FileService, http: Client[IO], cfg: ApiConfig):
           else files.receive(resp.body)(tmp => files.writeTo(actor, n, tmp, EventKind.Updated))
         }
 
-final class OfficeRoutes(office: OfficeService, files: FileService, nodes: NodeStore, val sessions: SessionAuth) extends RouteSupport:
+final class OfficeRoutes(office: OfficeService, files: FileService, nodes: NodeStore, shares: ShareStore, val sessions: SessionAuth)
+    extends RouteSupport:
+
+  /** 保存してよいか（編集を許した設定で、その人・そのリンクにいまも編集の権限があるか。共有を外したあとは保存させない）。 */
+  private def mayStillEdit(t: Json, n: Node): IO[Boolean] =
+    val c = t.hcursor
+    if !c.get[Boolean]("edit").contains(true) then IO.pure(false)
+    else (c.get[Option[UUID]]("actor").toOption.flatten, c.get[Option[UUID]]("sid").toOption.flatten) match
+      case (Some(uid), _) => sessions.sessionFor(uid).flatMap {
+        case Some(s) if !s.user.disabled => nodes.access(Viewer.of(s), n.id).map(_.exists(_._2.canEdit))
+        case _                           => IO.pure(false)
+      }
+      case (None, Some(sid)) => shares.find(sid).map(_.exists(sh =>
+        sh.kind == "link" && !sh.expired(java.time.LocalDate.now()) && sh.permission == "edit" && (sh.nodeId == n.id || n.ancestors.contains(sh.nodeId))))
+      case _ => IO.pure(false)
 
   /** Document Server への応答（error が 0 なら成功）。 */
   private def dsReply(error: Int, message: String = ""): IO[Response[IO]] =
@@ -161,7 +187,7 @@ final class OfficeRoutes(office: OfficeService, files: FileService, nodes: NodeS
                     case (2 | 6, Some(url)) =>
                       nodes.find(id).flatMap {
                         case None => dsReply(1, "file not found")
-                        case Some(n) => office.save(n, url, actor).flatMap {
+                        case Some(n) => mayStillEdit(t, n).ifM(office.save(n, url, actor), IO.pure(Left(Fail.Forbidden("編集の権限がありません")))).flatMap {
                           case Right(_) => dsReply(0)
                           case Left(f)  => IO.println(s"[skawau] onlyoffice save failed: ${f.message}") *> dsReply(1, f.message)
                         }

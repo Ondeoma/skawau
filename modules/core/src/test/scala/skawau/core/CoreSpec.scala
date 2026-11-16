@@ -15,6 +15,17 @@ class CoreSpec extends munit.FunSuite:
     assert(Names.invalid("a\\b").isDefined)
     assert(Names.invalid("a\u0000b").isDefined)
     assert(Names.invalid("x" * 256).isDefined)
+    assert(Names.invalid("report\u202Etxt.exe").isDefined) // 向きを変える制御文字（拡張子の偽装）
+    assertEquals(Names.zipSegment(".."), "_")
+    assertEquals(Names.zipSegment("a/b"), "a_b")
+  }
+
+  test("ログイン後に戻る先は同じサイトのパスだけ") {
+    assertEquals(skawau.shared.ReturnTo.orRoot(Some("/files/1?x=2")), "/files/1?x=2")
+    assertEquals(skawau.shared.ReturnTo.orRoot(Some("//evil.example")), "/")
+    assertEquals(skawau.shared.ReturnTo.orRoot(Some("/\\evil.example")), "/")
+    assertEquals(skawau.shared.ReturnTo.orRoot(Some("https://evil.example")), "/")
+    assertEquals(skawau.shared.ReturnTo.orRoot(Some("/a\nb")), "/")
   }
 
   test("同じ名前があるときの別名（大文字小文字は区別しない）") {

@@ -49,7 +49,9 @@ final class ActivityStore(xa: Transactor[IO]) extends TxStore(xa):
     sql"""select e.id, x.u from file_event e, lateral (
             select e.owner_id as u
             union select s.user_id from share s where s.node_id = any(e.lineage) and s.user_id is not null
+              and (s.expires_at is null or s.expires_at >= current_date)
             union select m.user_id from share s join group_member m on m.group_id = s.group_id where s.node_id = any(e.lineage)
+              and (s.expires_at is null or s.expires_at >= current_date)
           ) x where e.id > $last order by e.id limit 1000""".query[(Long, UUID)].to[List]
   )
 

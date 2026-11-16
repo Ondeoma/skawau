@@ -11,7 +11,7 @@ case class State(name: RV[String] = RV(""), email: RV[String] = RV(""), admin: R
 
 def initState() = State()
 
-def returnTo(): String = Option(new dom.URL(dom.window.location.href).searchParams.get("returnTo")).filter(_.startsWith("/")).getOrElse("/")
+def returnTo(): String = skawau.shared.ReturnTo.orRoot(Option(new dom.URL(dom.window.location.href).searchParams.get("returnTo")))
 
 def login(s: State): Unit =
   Api.devLogin(s.name.v.trim, s.email.v.trim, s.admin.v, s.groups.v.split(',').map(_.trim).filter(_.nonEmpty).toList, returnTo()).onComplete {

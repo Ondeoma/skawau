@@ -26,11 +26,13 @@ ONLYOFFICE と連携して、Word・Excel・PowerPoint の文書をブラウザ�
 - **認証・権限**: OIDC、システム管理者・一般。管理者でもほかの人のファイルの中身は見られない（共有されたものだけ）
 - **API・MCP**: ユーザーごとのスコープ付き APIキー（アプリパスワード）で REST API を呼べる（一覧は `GET /api/endpoints`）。
   MCP（`POST /mcp`）で AI からファイルを探す・読む（docx・xlsx・pptx は文字を取り出す）・書く・移動・共有ができる
+- **外部のサービスとの連携**: skea（タスク管理）・skiwi（Wiki）に貼った skawau の URL に、見る人の権限でファイル名を出す。
+  skaka（Web 会議）は会議の録画を本人の skawau に保存し、参加者と共有する（OAuth 2.0 で、サービスごとに許したスコープだけ）
 - **冗長化**: アプリはステートレスで複数ノードで動く。PostgreSQL は Patroni、ファイルの中身は S3 互換ストレージ
 - レスポンシブ対応、ダークモード対応
 
 設計は [docs/design.md](docs/design.md)、構築・運用は [docs/operations.md](docs/operations.md) を参照してください。
-兄弟プロジェクトの skea（タスク管理）・skiwi（Wiki）と同じ技術・同じ運用方針で作っています。
+兄弟プロジェクトの skea（タスク管理）・skiwi（Wiki）・skaka（Web 会議）と連携します。skea・skiwi と同じ技術・同じ運用方針で作っています。
 
 ## 構成
 
@@ -41,7 +43,7 @@ ONLYOFFICE と連携して、Word・Excel・PowerPoint の文書をブラウザ�
 | `modules/db` | doobie のストア（ファイル・共有・変更履歴・ユーザー）、Flyway のマイグレーション、ジョブのリース |
 | `modules/auth` | OIDC（Authorization Code + PKCE）、APIキー、JWT（ONLYOFFICE）、パスワードのハッシュ |
 | `modules/storage` | S3 互換ストレージ（ファイルの中身。Range 取得） |
-| `modules/api` | http4s のルート（REST・公開リンク・ONLYOFFICE・WebDAV・SSE）とファイル操作のサービス |
+| `modules/api` | http4s のルート（REST・公開リンク・ONLYOFFICE・WebDAV・SSE・MCP・OAuth）とファイル操作のサービス |
 | `modules/app` | 起動・設定（環境変数）・画面の配信・定期処理 |
 | `modules/web` | 画面（[Scalactive](https://github.com/Ondeoma/scalactive) の `.st` 単一ファイルコンポーネント） |
 | `frontend/` | Vite。Scala.js の出力をまとめてビルドする（フォルダのドロップ・ONLYOFFICE の読み込みの小さな JS を含む） |
@@ -94,7 +96,7 @@ Docker で動かす例（アプリ・DB・S3 互換ストレージ・ONLYOFFICE�
 | `APP_SECRET` | 16文字以上の秘密の値（公開リンクの Cookie・Document Server に渡す URL の署名） |
 | `S3_ENDPOINT` / `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_REGION` / `S3_PATH_STYLE` | ファイルの中身の保存先（必須） |
 | `ONLYOFFICE_URL` | ブラウザから見た Document Server の URL（未設定なら ONLYOFFICE 連携なし。Office 文書はダウンロードだけ） |
-| `ONLYOFFICE_JWT_SECRET` | Document Server の `JWT_SECRET` と同じ値（必須） |
+| `ONLYOFFICE_JWT_SECRET` | Document Server の `JWT_SECRET` と同じ値（必須。32文字以上） |
 | `ONLYOFFICE_INTERNAL_URL` | このサーバーから見た Document Server の URL（既定は `ONLYOFFICE_URL`） |
 | `ONLYOFFICE_APP_URL` | Document Server から見たこのサーバーの URL（既定は `PUBLIC_URL`） |
 | `MAX_UPLOAD_MB` | 1ファイルの上限（既定 10240 = 10GB） |

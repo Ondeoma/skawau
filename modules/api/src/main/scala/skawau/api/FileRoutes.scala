@@ -35,7 +35,8 @@ final class FileRoutes(files: FileService, nodes: NodeStore, shares: ShareStore,
   private def batch(s: AuthSession, ids: List[UUID])(f: UUID => Res[Option[Node]]): IO[Response[IO]] =
     ids.distinct.traverse(id => f(id).flatMap {
       case Right(n) => n.traverse(dtoOf(s, _)).map(d => Right(d))
-      case Left(e)  => nodes.find(id).map(n => Left(s"${n.fold("?")(_.name)}: ${e.message}"))
+      // 見られないものの名前は出さない
+      case Left(e)  => nodes.access(v(s), id).map(n => Left(s"${n.fold("?")(_._1.name)}: ${e.message}"))
     }).flatMap { rs =>
       Ok(BatchResultDto(rs.collect { case Right(Some(d)) => d }, rs.collect { case Left(m) => m }))
     }
@@ -77,7 +78,9 @@ final class FileRoutes(files: FileService, nodes: NodeStore, shares: ShareStore,
           case None => err(Status.BadRequest, "name を指定してください")
           case Some(name) =>
             val rel = param(req, "path").map(Names.segments).getOrElse(Nil)
-            nodeResult(s)(files.receive(req.body)(tmp => files.upload(Actor.of(s), v(s), id, rel, name, tmp, OnConflict.parse(param(req, "conflict")))))
+            // 本文を受け取る前に権限を確かめる（書けないフォルダへ大きな本文を送りつけて、ディスクを使わせないように）
+            respond(files.folder(v(s), id, Access.Edit))((_, _) =>
+              nodeResult(s)(files.receive(req.body)(tmp => files.upload(Actor.of(s), v(s), id, rel, name, tmp, OnConflict.parse(param(req, "conflict"))))))
       }
 
     // ---------------------------------------------------------------- 中身

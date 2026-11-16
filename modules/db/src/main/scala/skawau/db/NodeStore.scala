@@ -206,11 +206,12 @@ final class NodeStore(xa: Transactor[IO]) extends TxStore(xa):
 
   // ---------------------------------------------------------------- 容量
 
-  /** 使用量（ファイルの大きさの合計。ごみ箱を含む。以前の版は含まない）。 */
+  /** 使用量（ファイルの大きさの合計。ごみ箱と以前の版を含む）。 */
   def usage(ownerId: UUID): IO[Long] = tx(usageC(ownerId))
 
   private def usageC(ownerId: UUID): ConnectionIO[Long] =
-    sql"select coalesce(sum(size), 0)::bigint from node where owner_id = $ownerId and not is_dir".query[Long].unique
+    sql"""select (select coalesce(sum(size), 0) from node where owner_id = $ownerId and not is_dir)
+               + (select coalesce(sum(v.size), 0) from file_version v join node n on n.id = v.node_id where n.owner_id = $ownerId)""".query[Long].unique
 
   def stats: IO[StatsDto] = tx(
     sql"""select (select count(*)::int from app_user),
@@ -313,7 +314,7 @@ final class NodeStore(xa: Transactor[IO]) extends TxStore(xa):
   def rename(node: Node, name: String, actor: Actor): IO[Either[StoreError, Node]] = guarded(tx(
     for
       old <- pathC(node)
-      n   <- (fr"update node set name = $name, etag = ${newEtag()} where id = ${node.id}" ++ returning)
+      n   <- (fr"update node set name = $name, content_type = ${contentTypeOf(node, name)}, etag = ${newEtag()} where id = ${node.id}" ++ returning)
                .query[Node].unique
       _   <- node.parentId.traverse_(touchParent)
       p   <- pathC(n)
@@ -321,9 +322,13 @@ final class NodeStore(xa: Transactor[IO]) extends TxStore(xa):
     yield n
   ))
 
+  /** 名前から決めた Content-Type（名前を変えたら直す）。 */
+  private def contentTypeOf(node: Node, name: String): Option[String] = if node.isDir then None else Some(FileKind.contentType(name))
+
   /** 親を付け替える（自分と子孫の ancestors を1つの UPDATE ずつで直す）。 */
   private def reparentC(node: Node, dest: Node, name: String): ConnectionIO[Unit] =
-    sql"""update node set parent_id = ${dest.id}, ancestors = ${dest.lineage.toArray}, name = $name, etag = ${newEtag()}
+    sql"""update node set parent_id = ${dest.id}, ancestors = ${dest.lineage.toArray}, name = $name, content_type = ${contentTypeOf(node, name)},
+          etag = ${newEtag()}
           where id = ${node.id}""".update.run *>
       sql"""update node set ancestors = ${dest.lineage.toArray} || ancestors[array_position(ancestors, ${node.id}):]
             where ${node.id} = any(ancestors)""".update.run.void
@@ -344,8 +349,12 @@ final class NodeStore(xa: Transactor[IO]) extends TxStore(xa):
     else guarded(tx(
       for
         old <- pathC(node)
+        _   <- detachTrashedC(node).whenA(target.ownerId != node.ownerId)
         _   <- reparentC(node, target, name)
-        _   <- sql"update node set owner_id = ${target.ownerId} where id = ${node.id} or ${node.id} = any(ancestors)".update.run
+        _   <- (sql"update node set owner_id = ${target.ownerId} where id = ${node.id} or ${node.id} = any(ancestors)".update.run *>
+                 // 共有・リンクも新しい所有者のものにする（前の所有者が操作し続けられないように）
+                 sql"""update share set owner_id = ${target.ownerId}
+                       where node_id in (select id from node where id = ${node.id} or ${node.id} = any(ancestors))""".update.run)
                  .whenA(target.ownerId != node.ownerId)
         _   <- node.parentId.traverse_(touchParent) *> touchParent(target.id)
         n   <- findC(node.id).map(_.get)
@@ -353,6 +362,18 @@ final class NodeStore(xa: Transactor[IO]) extends TxStore(xa):
         _   <- Events.insert(n, actor, EventKind.Moved, p, Json.obj("fromPath" -> Json.fromString(old)))
       yield n
     ))
+
+  /**
+   * 所有者が変わる移動の前に、中のごみ箱にあるものを元の所有者のルートの下へ外す
+   * （ごみ箱の中身・その版が、移った先の所有者に渡らないように。ごみ箱の一覧の「元の場所」はそのまま）。
+   */
+  private def detachTrashedC(node: Node): ConnectionIO[Unit] =
+    for
+      root <- rootC(node.ownerId)
+      ts   <- (fr"select" ++ cols ++ fr"from node n where ${node.id} = any(n.ancestors) and n.deleted_at is not null").query[Node].to[List]
+      tops  = ts.filterNot(t => ts.exists(o => t.ancestors.contains(o.id)))
+      _    <- tops.traverse_(t => reparentC(t, root, t.name))
+    yield ()
 
   /**
    * コピー（フォルダは中身ごと）。S3 の中身の複製は呼び出し側で行い、copyBlob で新しいキーを受け取る。

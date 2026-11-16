@@ -25,9 +25,38 @@ final class PublicRoutes(files: FileService, nodes: NodeStore, shares: ShareStor
   private def cookieName(token: String) = "skawau_link_" + Crypto.hex(Crypto.sha256(token)).take(12)
   private def cookiePath(token: String) = s"/api/public/$token"
 
+  /** Cookie に入れるパスワードの印（パスワードを変えたら、前のパスワードで得た Cookie は使えなくなる）。 */
+  private def passwordMark(hash: String): String = Crypto.hex(Crypto.sha256(hash)).take(16)
+
   private def unlocked(req: Request[IO], sh: ShareRow): Boolean =
-    sh.passwordHash.isEmpty || req.cookies.find(_.name == cookieName(sh.token.get)).exists(c =>
-      Jwt.verify(c.content, cfg.appSecret).toOption.exists(_.hcursor.get[UUID]("sid").contains(sh.id)))
+    sh.passwordHash.forall(h => req.cookies.find(_.name == cookieName(sh.token.get)).exists(c =>
+      Jwt.verify(c.content, cfg.appSecret).toOption.exists(j =>
+        j.hcursor.get[UUID]("sid").contains(sh.id) && j.hcursor.get[String]("ph").contains(passwordMark(h)))))
+
+  // パスワードの総当たりを防ぐ（ノードごとのメモリで数える）。リンクごとに15分で10回まで間違えられ、
+  // ハッシュ（PBKDF2）の計算は同時に4つまで（大量に送りつけて CPU を使い切らせないように）
+  private val MaxFailures = 10
+  private val FailureWindow = 15L * 60
+  private val failures = new java.util.concurrent.ConcurrentHashMap[UUID, (Int, Instant)]()
+  private val hashing  = new java.util.concurrent.Semaphore(4)
+
+  private def lockedOut(id: UUID, now: Instant): Boolean =
+    Option(failures.get(id)).exists((n, at) => n >= MaxFailures && at.plusSeconds(FailureWindow).isAfter(now))
+
+  private def recordFailure(id: UUID, now: Instant): IO[Unit] = IO {
+    if failures.size > 10000 then failures.entrySet.removeIf(e => e.getValue._2.plusSeconds(FailureWindow).isBefore(now))
+    failures.compute(id, (_, old) => Option(old) match
+      case Some((n, at)) if at.plusSeconds(FailureWindow).isAfter(now) => (n + 1, at)
+      case _                                                          => (1, now))
+    ()
+  }
+
+  /** パスワードを確かめる（混み合っていて計算できなければ None）。 */
+  private def verifyPassword(password: String, hash: String): IO[Option[Boolean]] = IO.blocking {
+    if hashing.tryAcquire(5, java.util.concurrent.TimeUnit.SECONDS) then
+      try Some(Passwords.verify(password, hash)) finally hashing.release()
+    else None
+  }
 
   /** 有効なリンクと起点のノード（期限切れ・ごみ箱は 404）。 */
   private def link(token: String): IO[Option[(ShareRow, Node)]] =
@@ -75,13 +104,21 @@ final class PublicRoutes(files: FileService, nodes: NodeStore, shares: ShareStor
 
     case req @ POST -> Root / "api" / "public" / token / "auth" =>
       body[PasswordReq](req)(r => link(token).flatMap {
-        case Some((sh, _)) if sh.passwordHash.exists(h => Passwords.verify(r.password, h)) =>
-          val exp = Instant.now().plusSeconds(86400)
-          val c = ResponseCookie(cookieName(token), Jwt.sign(Json.obj("sid" -> sh.id.asJson, "exp" -> exp.getEpochSecond.asJson), cfg.appSecret),
-            maxAge = Some(86400L), path = Some(cookiePath(token)), httpOnly = true, secure = cfg.cookieSecure, sameSite = Some(SameSite.Lax))
-          NoContent().map(_.addCookie(c))
-        case Some(_) => IO.sleep(scala.concurrent.duration.DurationInt(1).second) *> err(Status.Forbidden, "パスワードが違います")
-        case None    => err(Status.NotFound, "リンクが見つかりません")
+        case None => err(Status.NotFound, "リンクが見つかりません")
+        case Some((sh, _)) =>
+          val now = Instant.now()
+          if lockedOut(sh.id, now) then err(Status.TooManyRequests, "パスワードを続けて間違えたため、しばらく入力できません")
+          else sh.passwordHash.fold(IO.pure(Option(false)))(h => verifyPassword(r.password, h)).flatMap {
+            case None => err(Status.ServiceUnavailable, "混み合っています。しばらくしてからやり直してください")
+            case Some(true) =>
+              val claims = Json.obj("sid" -> sh.id.asJson, "ph" -> sh.passwordHash.map(passwordMark).asJson,
+                "exp" -> now.plusSeconds(86400).getEpochSecond.asJson)
+              val c = ResponseCookie(cookieName(token), Jwt.sign(claims, cfg.appSecret),
+                maxAge = Some(86400L), path = Some(cookiePath(token)), httpOnly = true, secure = cfg.cookieSecure, sameSite = Some(SameSite.Lax))
+              NoContent().map(_.addCookie(c))
+            case Some(false) =>
+              recordFailure(sh.id, now) *> IO.sleep(scala.concurrent.duration.DurationInt(1).second) *> err(Status.Forbidden, "パスワードが違います")
+          }
       })
 
     /** フォルダの中身（upload のリンクは中身を見せない）。 */
@@ -142,6 +179,6 @@ final class PublicRoutes(files: FileService, nodes: NodeStore, shares: ShareStor
     case req @ GET -> Root / "api" / "public" / token / "office" =>
       withLink(req, token, param(req, "id").flatMap(uuidOpt)) { (sh, _, n) =>
         if !grant(sh).canRead then err(Status.Forbidden, "このリンクでは開けません")
-        else okJson(office.config(n, (s"link-${Crypto.randomToken(6)}", "ゲスト"), grant(sh).canEdit, None, Some(s"/s/$token")))
+        else okJson(office.config(n, (s"link-${Crypto.randomToken(6)}", "ゲスト"), grant(sh).canEdit, None, Some(s"/s/$token"), Some(sh.id)))
       }
   }

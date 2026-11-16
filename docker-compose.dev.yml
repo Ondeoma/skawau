@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: skawau
       POSTGRES_PASSWORD: skawau
       POSTGRES_DB: skawau
-    ports: ["54340:5432"]
+    ports: ["127.0.0.1:54340:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/docker/dev-initdb.sql:/docker-entrypoint-initdb.d/10-skawau-test.sql:ro   # テスト用DB skawau_test
@@ -22,7 +22,7 @@ services:
     environment:
       SCALAS3_ACCESS_KEY: skawau
       SCALAS3_SECRET_KEY: skawauskawauskawau
-    ports: ["3911:3900"]
+    ports: ["127.0.0.1:3911:3900"]
     volumes: ["s3data:/var/lib/scalas3/data"]
   # ONLYOFFICE Document Server（http://localhost:8093）。アプリ（ホストの :8092）へは host.docker.internal で届く
   office:
@@ -33,7 +33,7 @@ services:
       JWT_HEADER: Authorization
       JWT_IN_BODY: "true"
       ALLOW_PRIVATE_IP_ADDRESS: "true"   # 開発用: ホスト（プライベートアドレス）のアプリから文書を取れるようにする
-    ports: ["8093:80"]
+    ports: ["127.0.0.1:8093:80"]
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes: ["officedata:/var/www/onlyoffice/Data"]
 volumes:

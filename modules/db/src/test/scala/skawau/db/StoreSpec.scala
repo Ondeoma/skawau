@@ -160,6 +160,43 @@ class StoreSpec extends CatsEffectSuite:
     yield ()
   }
 
+  withDb("所有者の違うフォルダへの移動: ごみ箱の中身は元の所有者に残り、共有は新しい所有者のものになる") { e =>
+    for
+      a     <- user(e, "渡す人")
+      b     <- user(e, "受け取る人")
+      ra    <- e.nodes.root(a.id)
+      rb    <- e.nodes.root(b.id)
+      dir   <- ok(e.nodes.createFolder(ra, "渡す", actor(a)))
+      keep  <- ok(e.nodes.createFile(dir, "k.txt", blob(), actor(a)))
+      gone  <- ok(e.nodes.createFile(dir, "t.txt", blob(), actor(a)))
+      _     <- ok(e.nodes.trash(gone, actor(a)))
+      shId  <- ok(e.shares.create(dir.id, a.id, "link", None, None, "view", Some(UUID.randomUUID().toString), None, None, None))
+      _     <- ok(e.nodes.move(dir, rb, "渡す", actor(a)))
+      k2    <- e.nodes.find(keep.id).map(_.get)
+      _      = assertEquals(k2.ownerId, b.id)
+      t2    <- e.nodes.trashed(a.id, gone.id)
+      _      = assert(t2.exists(_.ancestors == List(ra.id))) // 元の所有者のルートの下へ外れる
+      none  <- e.nodes.trashed(b.id, gone.id)
+      _      = assertEquals(none, None)
+      sh2   <- e.shares.find(shId)
+      _      = assertEquals(sh2.map(_.ownerId), Some(b.id))
+    yield ()
+  }
+
+  withDb("容量には以前の版も数え、名前を変えると Content-Type も変わる") { e =>
+    for
+      u    <- user(e, "容量")
+      root <- e.nodes.root(u.id)
+      f    <- ok(e.nodes.createFile(root, "a.html", blob(100), actor(u)))
+      _    <- ok(e.nodes.replaceContent(f, blob(1), actor(u), keep = 5))
+      used <- e.nodes.usage(u.id)
+      _     = assertEquals(used, 101L)
+      f2   <- e.nodes.find(f.id).map(_.get)
+      r    <- ok(e.nodes.rename(f2, "a.pdf", actor(u)))
+      _     = assertEquals(r.contentType, Some("application/pdf"))
+    yield ()
+  }
+
   withDb("コピーはフォルダの中身ごと、新しい ID と祖先で作る") { e =>
     for
       u    <- user(e, "コピー")

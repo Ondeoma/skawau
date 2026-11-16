@@ -15,6 +15,14 @@ object OfficeText:
   /** ZIP の中で読む部品の大きさの上限（壊れた・悪意のある文書で膨らまないように）。 */
   private val MaxPart = 20L * 1024 * 1024
 
+  /** 展開した合計の上限と、読む部品の数の上限（小さな部品を大量に詰めた ZIP 爆弾を防ぐ）。 */
+  private val MaxTotal = 100L * 1024 * 1024
+  private val MaxParts = 2000
+
+  /** 文字を取り出すのに使う部品だけを読む。 */
+  private val Wanted = "^(word/document|xl/sharedStrings|xl/workbook|xl/worksheets/sheet\\d+|ppt/slides/slide\\d+)\\.xml$".r
+  private def wanted(name: String): Boolean = Wanted.matches(name)
+
   def supports(ext: String): Boolean = Set("docx", "xlsx", "pptx")(ext)
 
   def extract(ext: String, bytes: Array[Byte]): Either[String, String] =
@@ -29,13 +37,19 @@ object OfficeText:
 
   private def unzip(bytes: Array[Byte]): Map[String, Array[Byte]] =
     val z = new ZipInputStream(new ByteArrayInputStream(bytes))
-    Iterator.continually(z.getNextEntry).takeWhile(_ != null).filter(e => e.getName.endsWith(".xml")).map { e =>
+    var all = 0L
+    var count = 0
+    Iterator.continually(z.getNextEntry).takeWhile(_ != null).filter(e => wanted(e.getName)).map { e =>
+      count += 1
+      if count > MaxParts then throw new IllegalArgumentException("文書の部品が多すぎます")
       val out = new java.io.ByteArrayOutputStream()
       val buf = new Array[Byte](64 * 1024)
       var total = 0L
       Iterator.continually(z.read(buf)).takeWhile(_ >= 0).foreach { n =>
         total += n
+        all += n
         if total > MaxPart then throw new IllegalArgumentException("文書の部品が大きすぎます")
+        if all > MaxTotal then throw new IllegalArgumentException("文書が大きすぎます")
         out.write(buf, 0, n)
       }
       e.getName -> out.toByteArray

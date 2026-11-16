@@ -46,6 +46,7 @@ object Config:
       case Some(url) =>
         opt("ONLYOFFICE_JWT_SECRET") match
           case None => Left("ONLYOFFICE_URL を設定したときは ONLYOFFICE_JWT_SECRET（Document Server の JWT_SECRET と同じ値）も設定してください")
+          case Some(sec) if sec.length < 32 => Left("ONLYOFFICE_JWT_SECRET は32文字以上にしてください（推測されると保存の知らせを偽造されます）")
           case Some(sec) =>
             Right(Some(OfficeConfig(url.stripSuffix("/"), opt("ONLYOFFICE_INTERNAL_URL").getOrElse(url).stripSuffix("/"),
               opt("ONLYOFFICE_APP_URL").getOrElse(pub).stripSuffix("/"), sec)))
@@ -78,7 +79,8 @@ object Config:
       secret <- opt("APP_SECRET") match
                   case Some(s) if s.length >= 16 => Right(s)
                   case Some(_) => Left("APP_SECRET は16文字以上にしてください")
-                  case None if devLogin => Right("skawau-development-secret")
+                  // 固定の値は、開発用のログインで OIDC も https もないときだけ（本番の設定の誤りで使われないように）
+                  case None if devLogin && oidc.isEmpty && !pub.startsWith("https://") => Right("skawau-development-secret")
                   case None => Left("APP_SECRET（16文字以上の秘密の値）を設定してください")
       off <- office(pub)
       clients <- oauthClients
@@ -137,7 +139,7 @@ object Main extends IOApp.Simple:
           healthRoutes(xa, cfg.nodeId) <+>
             new AuthRoutes(oidc, users, activity, office, sess, cfg.api).routes <+>
             new UserRoutes(users, nodes, activity, files, blobs, sess).routes <+>
-            new OfficeRoutes(office, files, nodes, sess).routes <+>
+            new OfficeRoutes(office, files, nodes, shares, sess).routes <+>
             new FileRoutes(files, nodes, shares, activity, users, sess, cfg.api).routes <+>
             new PublicRoutes(files, nodes, shares, activity, office, sess, cfg.api).routes <+>
             new StreamRoutes(feed, sess).routes <+>
@@ -145,7 +147,7 @@ object Main extends IOApp.Simple:
             new OAuthRoutes(new OAuthStore(xa), nodes, activity, sess, cfg.api).routes
         // MCP のツールは REST API を内部で呼ぶ
         all = rest <+> new McpRoutes(rest, sess, cfg.api.publicUrl).routes
-        app = cfg.staticDir.fold(all)(d => all <+> spa(d))
+        app = securityHeaders(cfg.staticDir.fold(all)(d => all <+> spa(d)))
         _ <- EmberServerBuilder.default[IO]
                .withHost(ipv4"0.0.0.0")
                .withPort(Port.fromInt(cfg.port).getOrElse(port"8080"))
@@ -201,6 +203,21 @@ object Main extends IOApp.Simple:
   private def purgeLoop(users: UserStore, activity: ActivityStore, lock: JobLock): IO[Unit] =
     Periodic.run(10.minutes, 1.hour)(e => s"[skawau] purge failed: $e")(lock.exclusive("purge", 50.minutes)(
       IO.realTimeInstant.flatMap(users.purgeExpired) *> activity.purgeOld(180).void))
+
+  /**
+   * すべての応答に付けるセキュリティのヘッダー（個別に付けたものはそのまま）。
+   * 画面を他のサイトの iframe に埋め込ませない（クリックジャッキング）。PDF のプレビューは同じオリジンの iframe なので SAMEORIGIN。
+   */
+  private def securityHeaders(routes: HttpRoutes[IO]): HttpRoutes[IO] = routes.map { r =>
+    def absent(n: String) = r.headers.get(org.typelevel.ci.CIString(n)).isEmpty
+    val hs = List(
+      "X-Content-Type-Options"  -> "nosniff",
+      "X-Frame-Options"         -> "SAMEORIGIN",
+      "Referrer-Policy"         -> "same-origin",
+      "Content-Security-Policy" -> "frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
+    ).filter((n, _) => absent(n))
+    r.putHeaders(hs.map(h => h: Header.ToRaw)*)
+  }
 
   /** ビルド済みの画面の配信。存在しないパスは index.html（SPA）。 */
   private def spa(dir: String): HttpRoutes[IO] =

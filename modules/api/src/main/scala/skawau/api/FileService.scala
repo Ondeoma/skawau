@@ -191,7 +191,11 @@ final class FileService(nodes: NodeStore, users: UserStore, blobs: Option[BlobSt
       n      <- R(node(v, id, Access.View)).map(_._1)
       target <- R(folder(v, targetId, Access.Edit)).map(_._1)
       name    = newName.map(Names.normalize).getOrElse(n.name)
+      _      <- validName(name)
       _      <- R(canDetach(v, n)).whenA(!copy)
+      // 所有者の違うフォルダへ移すと所有者ごと移るので、ほかの人のものは移せない（編集権限だけで他人のものを奪えないように）
+      _      <- check(copy || target.ownerId == n.ownerId || n.ownerId == v.userId,
+                  Fail.Forbidden("ほかの人のものは、所有者の違うフォルダへは移動できません（コピーしてください）"))
       // コピーと、所有者の違うフォルダへの移動は、移った先の所有者の容量を使う
       _      <- (lift(sizeOf(n)).flatMap(sz => R(checkQuota(target.ownerId, sz)))).whenA(copy || target.ownerId != n.ownerId)
       r <- if !copy && n.parentId.contains(target.id) && n.name == name then EitherT.rightT[IO, Fail](n)
@@ -239,7 +243,8 @@ final class FileService(nodes: NodeStore, users: UserStore, blobs: Option[BlobSt
       Resource.make(IO(new ZipOutputStream(os)))(z => IO.blocking(z.close())).use { z =>
         entries.traverse_ { (path, n) =>
           IO.blocking {
-            val e = new ZipEntry(if n.isDir then path + "/" else path)
+            val safe = path.split('/').map(Names.zipSegment).mkString("/")
+            val e = new ZipEntry(if n.isDir then safe + "/" else safe)
             e.setTime(n.updatedAt.toEpochMilli)
             z.putNextEntry(e)
           } *>

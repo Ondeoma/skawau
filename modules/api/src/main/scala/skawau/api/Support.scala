@@ -117,6 +117,18 @@ final class SessionAuth(users: UserStore, cfg: ApiConfig):
       case Some(Authorization(BasicCredentials(_, pass))) if ApiKeys.looksLike(pass) => byKey(pass, dav = true)
       case _ => bearer(req).fold(IO.pure(None))(byKey(_, dav = true))
 
+  private val publicOrigin = "^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+".r.findFirstIn(cfg.publicUrl).getOrElse(cfg.publicUrl).toLowerCase
+
+  /**
+   * この画面から送られた要求か（Cookie のセッションでの更新系の要求に使う CSRF の対策）。
+   * SameSite=Lax の Cookie は同じサイトの別のサブドメインからの送信を防げないため、Sec-Fetch-Site（なければ Origin）で確かめる。
+   */
+  def sameOrigin(req: Request[IO]): Boolean =
+    def header(n: String) = req.headers.get(org.typelevel.ci.CIString(n)).map(_.head.value)
+    header("Sec-Fetch-Site") match
+      case Some(v) => v == "same-origin" || v == "none"
+      case None    => header("Origin").forall(_.toLowerCase == publicOrigin)
+
   def sessionFor(userId: UUID): IO[Option[AuthSession]] =
     users.withGroups(userId).map(_.map((u, gs) => AuthSession(u, gs, isAdmin(u, gs))))
 
@@ -155,11 +167,16 @@ trait RouteSupport extends Http4sDsl[IO]:
   private val readOnlyPosts = Set("/api/files/lookup", "/api/users/lookup")
   private def readOnlyPost(req: Request[IO]): Boolean = req.method == Method.POST && readOnlyPosts.contains(req.pathInfo.renderString)
 
-  /** ログインしていなければ 401。更新系の要求を read スコープのキーで送ったら 403。 */
+  private def safeMethod(req: Request[IO]) = Set(Method.GET, Method.HEAD, Method.OPTIONS).contains(req.method)
+
+  protected def sameOrigin(req: Request[IO]): Boolean = sessions.sameOrigin(req)
+
+  /** ログインしていなければ 401。更新系の要求を read スコープのキーで送ったら 403。Cookie のセッションでほかのサイトから送られたら 403。 */
   protected def authed(req: Request[IO])(f: AuthSession => IO[Response[IO]]): IO[Response[IO]] =
     sessions.fromRequest(req).flatMap {
       case None => err(Status.Unauthorized, "ログインしてください")
-      case Some(s) if !s.canWrite && !Set(Method.GET, Method.HEAD, Method.OPTIONS).contains(req.method) && !readOnlyPost(req) =>
+      case Some(s) if s.isSession && !safeMethod(req) && !sameOrigin(req) => err(Status.Forbidden, "ほかのサイトからの要求は受け付けません")
+      case Some(s) if !s.canWrite && !safeMethod(req) && !readOnlyPost(req) =>
         err(Status.Forbidden, "このAPIキーは参照専用です（write スコープが必要です）")
       case Some(s) => f(s)
     }
