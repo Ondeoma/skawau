@@ -19,8 +19,8 @@ import java.util.UUID
  * そのリンクのパスだけに効く Cookie（署名つき、24時間）を渡す。
  * 権限: view（閲覧・ダウンロード）/ edit（加えてアップロード・フォルダの作成・Office の編集）/ upload（アップロードだけ。中身は見せない）。
  */
-final class PublicRoutes(files: FileService, nodes: NodeStore, shares: ShareStore, activity: ActivityStore, office: OfficeService,
-    val sessions: SessionAuth, cfg: ApiConfig) extends RouteSupport:
+final class PublicRoutes(files: FileService, nodes: NodeStore, shares: ShareStore, office: OfficeService,
+    notifier: Notifier, val sessions: SessionAuth, cfg: ApiConfig) extends RouteSupport:
 
   private def cookieName(token: String) = "skawau_link_" + Crypto.hex(Crypto.sha256(token)).take(12)
   private def cookiePath(token: String) = s"/api/public/$token"
@@ -138,10 +138,10 @@ final class PublicRoutes(files: FileService, nodes: NodeStore, shares: ShareStor
     case req @ GET -> Root / "api" / "public" / token / "content" =>
       withLink(req, token, param(req, "id").flatMap(uuidOpt)) { (sh, _, n) =>
         if !grant(sh).canRead then err(Status.Forbidden, "このリンクではダウンロードできません")
-        else if n.isDir then Serve.zip(files, List(n), n.name)
+        else if n.isDir then Serve.zip(files, List(n), n.name, actor.via)
         else
           val dl = boolParam(req, "download")
-          nodes.event(n, actor, EventKind.LinkDownloaded).whenA(dl) *> Serve.node(req, files, n, dl)
+          nodes.event(n, actor, EventKind.LinkDownloaded).whenA(dl) *> Serve.node(req, files, n, dl, actor.via)
       }
 
     case req @ GET -> Root / "api" / "public" / token / "zip" =>
@@ -150,7 +150,7 @@ final class PublicRoutes(files: FileService, nodes: NodeStore, shares: ShareStor
         else
           idsParam(req, "ids").traverse(nodes.find).map(_.flatten.filter(n => n.id == root.id || n.ancestors.contains(root.id))).flatMap { ns =>
             val items = if ns.isEmpty then List(root) else ns
-            Serve.zip(files, items, root.name)
+            Serve.zip(files, items, root.name, actor.via)
           }
       }
 
@@ -163,7 +163,7 @@ final class PublicRoutes(files: FileService, nodes: NodeStore, shares: ShareStor
           case (Some(name), _) =>
             val rel = if grant(sh).canEdit then param(req, "path").map(Names.segments).getOrElse(Nil) else Nil
             respond(files.receive(req.body)(tmp => files.upload(actor, ownerViewer(sh), dir.id, rel, name, tmp, OnConflict.Rename))) { n =>
-              activity.notify(List(sh.ownerId), NotificationKind.Uploaded, s"公開リンクから「${n.name}」がアップロードされました",
+              notifier.notify(List(sh.ownerId), NotificationKind.Uploaded, s"公開リンクから「${n.name}」がアップロードされました",
                 sh.label.getOrElse(""), Some(s"/files/${n.parentId.getOrElse(dir.id)}"), None) *>
                 publicDto(sh, n)
             }

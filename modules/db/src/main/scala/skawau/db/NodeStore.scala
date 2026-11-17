@@ -433,7 +433,7 @@ final class NodeStore(xa: Transactor[IO]) extends TxStore(xa):
         _ <- node.parentId.traverse_(touchParent)
         _ <- Events.insert(node, actor, EventKind.Trashed, p)
       yield Right(())
-    )
+    ).flatTap(_ => skawau.observe.Metrics.count("skawau.trash.moved", "via" -> actor.via))
 
   def trashList(ownerId: UUID): IO[List[TrashItemDto]] = tx(
     sql"""select n.id, n.name, n.is_dir,
@@ -465,9 +465,9 @@ final class NodeStore(xa: Transactor[IO]) extends TxStore(xa):
       p      <- pathC(n)
       _      <- Events.insert(n, actor, EventKind.Restored, p)
     yield n
-  )
+  ).flatTap(_ => skawau.observe.Metrics.count("skawau.trash.restored", "via" -> actor.via))
 
-  /** 完全に削除する（子孫・版・共有ごと。S3 の中身は blob_trash に積んで後で消す）。 */
+  /** 完全に削除する（子孫・版・共有ごと。S3 の中身は blob_trash に積んで後で消す）。期限切れの自動の削除は via が system。 */
   def purge(node: Node, actor: Actor): IO[Unit] = tx(
     for
       _ <- sql"""insert into blob_trash (key)
@@ -478,7 +478,7 @@ final class NodeStore(xa: Transactor[IO]) extends TxStore(xa):
       _ <- sql"delete from node where id = ${node.id}".update.run
       _ <- Events.insert(node, actor, EventKind.Deleted, p)
     yield ()
-  )
+  ).flatTap(_ => skawau.observe.Metrics.count("skawau.trash.purged", "via" -> actor.via))
 
   /** 期限を過ぎたごみ箱の起点（自動で完全に削除する）。 */
   def expiredTrash(days: Int, limit: Int): IO[List[Node]] =

@@ -29,15 +29,20 @@ object Api {
   private def errorOf(status: Int, statusText: String, text: String): ApiError =
     ApiError(status, parse(text).toOption.flatMap(_.hcursor.get[String]("error").toOption).getOrElse(s"$status $statusText"))
 
-  private def request(method: dom.HttpMethod, url: String, body: Option[Json] = None): Future[Option[Json]] = {
-    val init = new dom.RequestInit {}
-    init.method = method
-    init.credentials = dom.RequestCredentials.`same-origin`
+  /** fetch の設定（同じオリジンの Cookie を付ける. body は JSON の文字列）. */
+  def init(method: dom.HttpMethod, body: Option[String] = None): dom.RequestInit = {
+    val i = new dom.RequestInit {}
+    i.method = method
+    i.credentials = dom.RequestCredentials.`same-origin`
     body.foreach { b =>
-      init.headers = js.Dictionary("Content-Type" -> "application/json")
-      init.body = b.noSpaces
+      i.headers = js.Dictionary("Content-Type" -> "application/json")
+      i.body = b
     }
-    dom.fetch(url, init).toFuture.flatMap { res =>
+    i
+  }
+
+  private def request(method: dom.HttpMethod, url: String, body: Option[Json] = None): Future[Option[Json]] = {
+    dom.fetch(url, init(method, body.map(_.noSpaces))).toFuture.flatMap { res =>
       if (res.status == 401 && !url.startsWith("/api/public/")) {
         toLogin()
         Future.failed(ApiError(401, "ログインしてください"))
@@ -60,19 +65,15 @@ object Api {
 
   /** 本文をそのまま送る（テキストの保存）. */
   def putText[A: Decoder](url: String, text: String): Future[A] = {
-    val init = new dom.RequestInit {}
-    init.method = dom.HttpMethod.PUT
-    init.credentials = dom.RequestCredentials.`same-origin`
-    init.body = text
-    dom.fetch(url, init).toFuture.flatMap { res =>
+    val i = init(dom.HttpMethod.PUT)
+    i.body = text
+    dom.fetch(url, i).toFuture.flatMap { res =>
       res.text().toFuture.map(t => if (res.ok) as[A](parse(t).toOption) else throw errorOf(res.status, res.statusText, t))
     }
   }
 
   def text(url: String): Future[String] = {
-    val init = new dom.RequestInit {}
-    init.credentials = dom.RequestCredentials.`same-origin`
-    dom.fetch(url, init).toFuture.flatMap(res => res.text().toFuture.map(t => if (res.ok) t else throw errorOf(res.status, res.statusText, t)))
+    dom.fetch(url, init(dom.HttpMethod.GET)).toFuture.flatMap(res => res.text().toFuture.map(t => if (res.ok) t else throw errorOf(res.status, res.statusText, t)))
   }
 
   def enc(s: String): String = js.URIUtils.encodeURIComponent(s)

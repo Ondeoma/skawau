@@ -46,11 +46,13 @@ def bare = Router.href.mapC { h => val p = path(h); p.startsWith("/s/") || p.sta
 def framed = bare.mapC(!_)
 
 def mounted(s: State): Unit = {
+  Fallback.install(routes)
   Store.report(Api.clientConfig())(c => Store.config := Some(c))
   val p = dom.window.location.pathname
   if (p.startsWith("/login") || p.startsWith("/s/")) s.ready := true
   else Store.report(Api.me()) { me =>
     Store.me := Some(me)
+    Observe.setUser(me.id.toString)
     Store.refresh()
     Store.connect()
     s.ready := true
@@ -96,6 +98,7 @@ def sideClass = Store.sideOpen.mapC(o => if (o) "side open" else "side")
     </RouterLink>
     <div v-if="loggedIn" class="me">
       <button class="ghost me-btn" @click="s.menu := !s.menu.v"><Avatar :user="meBrief.v" :size="24" /><span class="hide-sp">{{ userName }}</span> ▾</button>
+      <div v-if="s.menu" class="menu-bg" @click="s.menu := false"></div>
       <div v-if="s.menu" class="menu" @click="s.menu := false">
         <RouterLink to="/settings">個人設定・WebDAV</RouterLink>
         <RouterLink to="/notifications">通知</RouterLink>
@@ -155,8 +158,7 @@ def sideClass = Store.sideOpen.mapC(o => if (o) "side open" else "side")
 .me { position: relative; }
 .menu { position: absolute; right: 0; top: 2.4rem; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow);
   min-width: 200px; padding: .3rem; display: flex; flex-direction: column; z-index: 200; }
-.menu a { padding: .45rem .7rem; border-radius: 6px; color: var(--fg); }
-.menu a:hover { background: var(--hover); text-decoration: none; }
+.menu-bg { position: fixed; inset: 0; z-index: 199; }
 .main { min-width: 0; }
 @media (max-width: 720px) { .search { margin-left: 0; } .brand { font-size: 1rem; } }
 </style>

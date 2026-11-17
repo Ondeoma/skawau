@@ -34,7 +34,7 @@ final class EventFeed(activity: ActivityStore, topic: Topic[IO, FeedItem]):
           _   <- ns.traverse_((u, _) => topic.publish1(FeedItem.Notified(u)))
         yield (evs.map(_._1).maxOption.fold(last)(math.max(last, _)), (since :: ns.map(_._2)).max)
       def go(last: Long, since: Instant): IO[Nothing] =
-        IO.sleep(1.second) *> step(last, since).handleErrorWith(e => IO.println(s"[skawau] event feed failed: $e").as((last, since)))
+        IO.sleep(1.second) *> step(last, since).handleErrorWith(e => skawau.observe.Log.println(s"[skawau] event feed failed: $e").as((last, since)))
           .flatMap((l, s) => go(l, s))
       go(start, now)
     }
@@ -56,6 +56,8 @@ final class StreamRoutes(feed: EventFeed, val sessions: SessionAuth) extends Rou
         // 接続が切られないよう 20 秒ごとに空の行を送る
         val ping = Stream.awakeEvery[IO](20.seconds).as(ServerSentEvent(comment = Some("ping")))
         val body = Stream.emit(ServerSentEvent(retry = Some(5.seconds), comment = Some("hello"))) ++ events.merge(ping)
-        Ok(body).map(_.putHeaders("Cache-Control" -> "no-cache", "X-Accel-Buffering" -> "no"))
+        // 接続中の数（skorimako のゲージ）
+        Ok(body.through(s => Stream.bracket(skawau.observe.Metrics.upDown("skawau.sse.connections", 1))(_ => skawau.observe.Metrics.upDown("skawau.sse.connections", -1)) >> s))
+          .map(_.putHeaders("Cache-Control" -> "no-cache", "X-Accel-Buffering" -> "no"))
       }
   }

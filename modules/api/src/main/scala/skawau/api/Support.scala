@@ -178,7 +178,8 @@ trait RouteSupport extends Http4sDsl[IO]:
       case Some(s) if s.isSession && !safeMethod(req) && !sameOrigin(req) => err(Status.Forbidden, "ほかのサイトからの要求は受け付けません")
       case Some(s) if !s.canWrite && !safeMethod(req) && !readOnlyPost(req) =>
         err(Status.Forbidden, "このAPIキーは参照専用です（write スコープが必要です）")
-      case Some(s) => f(s)
+      // 操作したユーザーを、トレース（スパンの属性）とこの中のログに載せる
+      case Some(s) => skawau.observe.Telemetry.withUser(s.user.id.toString, s.user.name)(f(s))
     }
 
   /** システム管理者のみ（APIキーは admin スコープが必要）。 */

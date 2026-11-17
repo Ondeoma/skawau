@@ -2,12 +2,12 @@
 import skawau.web.*
 import skawau.shared.*
 import org.scalajs.dom
-import skawau.web.parts.Avatar
+import skawau.web.parts.{Avatar, PushToggle}
 
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.util.{Failure, Success}
 
-// 個人設定: 名前・アイコン・画面の色・容量、WebDAV の接続先とアプリパスワード（APIキー）.
+// 個人設定: 名前・アイコン・画面の色・容量、通知（プッシュ通知）、WebDAV の接続先とアプリパスワード（APIキー）.
 case class State(name: RV[String] = RV(""),
                  keys: RV[List[ApiKeyDto]] = RV(Nil),
                  keyName: RV[String] = RV(""),
@@ -101,6 +101,12 @@ def hasError(s: State) = s.error.mapC(_.nonEmpty)
       <p class="muted small">容量: {{ quota }}</p>
       <div class="field"><span>画面の色</span>
         <div class="chips"><button v-for="t in Theme.options" :class="themeChip(t._1)" @click="Theme.set(t._1)">{{ t._2 }}</button></div></div>
+    </section>
+
+    <section class="panel">
+      <h2>通知</h2>
+      <p><PushToggle /></p>
+      <p class="muted small">共有されたとき・公開リンクからアップロードされたときの通知（右上の 🔔）を、この端末にも知らせます。</p>
     </section>
 
     <section class="panel">

@@ -7,6 +7,7 @@ import org.http4s.headers.`WWW-Authenticate`
 import org.typelevel.ci.CIString
 import skawau.core.*
 import skawau.db.*
+import skawau.observe.{Metrics, Telemetry}
 import skawau.shared.FileKind
 
 import java.time.format.DateTimeFormatter
@@ -70,9 +71,10 @@ final class DavRoutes(files: FileService, nodes: NodeStore, val sessions: Sessio
           case None => unauthorized
           case Some(s) if !s.canWrite && !Set("GET", "HEAD", "PROPFIND").contains(req.method.name) =>
             IO.pure(Response[IO](Status.Forbidden).withEntity("このアプリパスワードは参照専用です"))
-          case Some(s) => nodes.root(s.userId).flatMap(root => handle(req, s, root, segs))
+          // 操作したユーザーを、トレース（スパンの属性）とこの中のログに載せる
+          case Some(s) => Telemetry.withUser(s.user.id.toString, s.user.name)(nodes.root(s.userId).flatMap(root => handle(req, s, root, segs)))
         }
-    }
+    }.semiflatTap(r => Metrics.count("skawau.dav.requests", "method" -> req.method.name, "status" -> s"${r.status.code / 100}xx"))
   }
 
   private def handle(req: Request[IO], s: AuthSession, root: Node, segs: List[String]): IO[Response[IO]] =
@@ -98,7 +100,7 @@ final class DavRoutes(files: FileService, nodes: NodeStore, val sessions: Sessio
 
       case "GET" | "HEAD" =>
         target.flatMap {
-          case Some(n) if !n.isDir => Serve.node(req, files, n, download = true, head = req.method == Method.HEAD)
+          case Some(n) if !n.isDir => Serve.node(req, files, n, download = true, "dav", head = req.method == Method.HEAD)
           case Some(_)             => status(Status.MethodNotAllowed, "フォルダは PROPFIND で一覧してください")
           case None                => status(Status.NotFound)
         }

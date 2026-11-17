@@ -10,6 +10,7 @@ import org.http4s.headers.Authorization
 import skawau.auth.Jwt
 import skawau.core.*
 import skawau.db.*
+import skawau.observe.{Log, Metrics, Telemetry}
 import skawau.shared.*
 
 import java.time.Instant
@@ -85,7 +86,9 @@ final class OfficeService(files: FileService, http: Client[IO], cfg: ApiConfig):
           )
         )
         val signed = body.deepMerge(Json.obj("token" -> Jwt.sign(body, o.secret).asJson))
-        IO.pure(Right(OfficeConfigDto(o.url, signed, n.name, canEdit, n.parentId)))
+        // エディタを開いた数（編集・閲覧、ログインした人・公開リンク）
+        Metrics.count("skawau.office.opened", "mode" -> (if canEdit then "edit" else "view"), "via" -> (if link.isDefined then "link" else "user"))
+          .as(Right(OfficeConfigDto(o.url, signed, n.name, canEdit, n.parentId)))
 
   // ---------------------------------------------------------------- Document Server からの呼び出し
 
@@ -124,13 +127,13 @@ final class OfficeService(files: FileService, http: Client[IO], cfg: ApiConfig):
 
   /** 編集した文書を取り込む（新しい版）。 */
   def save(n: Node, url: String, actor: Actor): Res[Node] =
-    Uri.fromString(internal(url)).left.map(e => Fail.Invalid(e.message)).filterOrElse(fromDocumentServer, Fail.Invalid("Document Server 以外の URL です")) match
+    Telemetry.span("office.save", "node.id" -> n.id.toString)(Uri.fromString(internal(url)).left.map(e => Fail.Invalid(e.message)).filterOrElse(fromDocumentServer, Fail.Invalid("Document Server 以外の URL です")) match
       case Left(f) => IO.pure(Left(f))
       case Right(uri) =>
         http.run(Request[IO](Method.GET, uri)).use { resp =>
           if !resp.status.isSuccess then IO.pure(Left(Fail.Invalid(s"Document Server から文書を取れませんでした（${resp.status.code}）")))
           else files.receive(resp.body)(tmp => files.writeTo(actor, n, tmp, EventKind.Updated))
-        }
+        })
 
 final class OfficeRoutes(office: OfficeService, files: FileService, nodes: NodeStore, shares: ShareStore, val sessions: SessionAuth)
     extends RouteSupport:
@@ -164,7 +167,7 @@ final class OfficeRoutes(office: OfficeService, files: FileService, nodes: NodeS
       office.checkUrl(param(req, "t"), id) match
         case Left(e) => err(Status.Forbidden, e)
         case Right(_) => nodes.find(id).flatMap {
-          case Some(n) if !n.isDir => Serve.node(req, files, n, download = true)
+          case Some(n) if !n.isDir => Serve.node(req, files, n, download = true, "office")
           case _                   => err(Status.NotFound, "ファイルが見つかりません")
         }
 
@@ -187,10 +190,13 @@ final class OfficeRoutes(office: OfficeService, files: FileService, nodes: NodeS
                     case (2 | 6, Some(url)) =>
                       nodes.find(id).flatMap {
                         case None => dsReply(1, "file not found")
-                        case Some(n) => mayStillEdit(t, n).ifM(office.save(n, url, actor), IO.pure(Left(Fail.Forbidden("編集の権限がありません")))).flatMap {
-                          case Right(_) => dsReply(0)
-                          case Left(f)  => IO.println(s"[skawau] onlyoffice save failed: ${f.message}") *> dsReply(1, f.message)
-                        }
+                        case Some(n) =>
+                          val trigger = if status == 6 then "forcesave" else "closed"
+                          mayStillEdit(t, n).ifM(office.save(n, url, actor), IO.pure(Left(Fail.Forbidden("編集の権限がありません")))).flatMap {
+                            case Right(_) => Metrics.count("skawau.office.saved", "result" -> "ok", "trigger" -> trigger) *> dsReply(0)
+                            case Left(f)  => Metrics.count("skawau.office.saved", "result" -> "error", "trigger" -> trigger) *>
+                                               Log.println(s"[skawau] onlyoffice save failed: ${f.message}") *> dsReply(1, f.message)
+                          }
                       }
                     case (2 | 6, None) => dsReply(1, "url がありません")
                     case _             => dsReply(0)

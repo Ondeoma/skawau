@@ -7,6 +7,7 @@ import fs2.Stream
 import fs2.io.file.{Files, Path}
 import skawau.core.*
 import skawau.db.*
+import skawau.observe.{Metrics, Telemetry}
 import skawau.shared.*
 import skawau.storage.{BlobMeta, BlobStore}
 
@@ -136,7 +137,7 @@ final class FileService(nodes: NodeStore, users: UserStore, blobs: Option[BlobSt
    */
   def upload(actor: Actor, v: Viewer, folderId: UUID, relPath: List[String], name0: String, tmp: Path, conflict: OnConflict): Res[Node] =
     val name = Names.normalize(name0)
-    (for
+    Telemetry.span("file.upload", "via" -> actor.via)((for
       _        <- (name :: relPath).traverse_(validName)
       dir0     <- R(folder(v, folderId, Access.Edit)).map(_._1)
       dir      <- R(nodes.ensureFolders(dir0, relPath, actor).orFail)
@@ -149,11 +150,15 @@ final class FileService(nodes: NodeStore, users: UserStore, blobs: Option[BlobSt
              case Some(_) if conflict == OnConflict.Fail       => failed(Fail.Conflict(s"「$name」はすでにあります"))
              case Some(_) => lift(nodes.uniqueName(dir.id, name)).flatMap(nm => withBlob(tmp, nm)(nodes.createFile(dir, nm, _, actor).orFail))
              case None    => withBlob(tmp, name)(nodes.createFile(dir, name, _, actor).orFail)
-    yield n).value
+    yield n).value).flatTap {
+      // アップロード（REST・WebDAV・公開リンク・MCP）の数とバイト数
+      case Right(n) => Metrics.count("skawau.files.uploaded", "via" -> actor.via) *> Metrics.add("skawau.files.uploaded_bytes", n.size, "via" -> actor.via)
+      case Left(_)  => IO.unit
+    }
 
   /** 既存のファイルの中身を置き換える（新しい版）。権限は呼び出し側で確かめること。 */
   def writeTo(actor: Actor, n: Node, tmp: Path, kind: String = EventKind.Updated, expectedVersion: Option[Int] = None): Res[Node] =
-    (for
+    Telemetry.span("file.write", "via" -> actor.via)((for
       _    <- check(!n.isDir, Fail.Invalid("フォルダには書き込めません"))
       size <- lift(Files[IO].size(tmp))
       _    <- R(checkQuota(n.ownerId, math.max(0L, size - n.size)))
@@ -162,7 +167,7 @@ final class FileService(nodes: NodeStore, users: UserStore, blobs: Option[BlobSt
              if n.sha256.contains(info.sha256) && n.size == info.size then trashBlob(info).as(Right(n))
              else nodes.replaceContent(n, info, actor, cfg.versionsKept, kind, expectedVersion).orFail
            }
-    yield r).value
+    yield r).value)
 
   /** 空のファイル（Office は最小の文書）を作る。 */
   def createEmpty(actor: Actor, v: Viewer, folderId: UUID, name0: String): Res[Node] =

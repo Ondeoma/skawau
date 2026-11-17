@@ -15,7 +15,7 @@ import java.util.UUID
 
 /** ファイル・フォルダ・版・ごみ箱・お気に入り・検索・共有の REST API。 */
 final class FileRoutes(files: FileService, nodes: NodeStore, shares: ShareStore, activity: ActivityStore, users: UserStore,
-    val sessions: SessionAuth, cfg: ApiConfig) extends RouteSupport:
+    notifier: Notifier, val sessions: SessionAuth, cfg: ApiConfig) extends RouteSupport:
 
   private def v(s: AuthSession): Viewer = Viewer.of(s)
 
@@ -87,8 +87,8 @@ final class FileRoutes(files: FileService, nodes: NodeStore, shares: ShareStore,
 
     case req @ GET -> Root / "api" / "files" / UuidVar(id) / "content" =>
       authed(req)(s => respond(files.node(v(s), id, Access.View))((n, _) =>
-        if n.isDir then Serve.zip(files, List(n), n.name)
-        else Serve.node(req, files, n, boolParam(req, "download"))))
+        if n.isDir then Serve.zip(files, List(n), n.name, s.viaString)
+        else Serve.node(req, files, n, boolParam(req, "download"), s.viaString)))
 
     /** 画面のテキストエディタからの保存（version を渡すと、ほかの人の更新との競合を検出する）。 */
     case req @ PUT -> Root / "api" / "files" / UuidVar(id) / "content" =>
@@ -100,7 +100,7 @@ final class FileRoutes(files: FileService, nodes: NodeStore, shares: ShareStore,
         idsParam(req, "ids").traverse[IO, Either[Fail, (Node, Access)]](id => files.node(v(s), id, Access.View)).flatMap { rs =>
           val ok = rs.collect { case Right((n, _)) => n }
           if ok.isEmpty then err(Status.NotFound, "ファイルが見つかりません")
-          else Serve.zip(files, ok, "skawau")
+          else Serve.zip(files, ok, "skawau", s.viaString)
         }
       }
 
@@ -139,7 +139,7 @@ final class FileRoutes(files: FileService, nodes: NodeStore, shares: ShareStore,
           case Some(r) =>
             val old = n.copy(blobKey = Some(r.blobKey), size = r.size, version = r.version, etag = s"v${r.id}", updatedAt = r.createdAt,
               name = s"${FileKind.base(n.name)} (版${r.version})${Option(FileKind.ext(n.name)).filter(_.nonEmpty).fold("")("." + _)}")
-            Serve.node(req, files, old, download = true)
+            Serve.node(req, files, old, download = true, s.viaString)
         }))
 
     case req @ POST -> Root / "api" / "files" / UuidVar(id) / "versions" / UuidVar(vid) / "restore" =>
@@ -267,9 +267,10 @@ final class FileRoutes(files: FileService, nodes: NodeStore, shares: ShareStore,
                 _   <- nodes.event(n, Actor.of(s), EventKind.Shared, Json.obj("kind" -> r.kind.asJson, "permission" -> r.permission.asJson))
                 to  <- shares.recipients(sh)
                 link = if n.isDir then s"/files/${n.id}" else s"/view/${n.id}"
-                _   <- activity.notify(to, NotificationKind.Shared, s"${s.user.name} さんが「${n.name}」を共有しました",
+                _   <- notifier.notify(to, NotificationKind.Shared, s"${s.user.name} さんが「${n.name}」を共有しました",
                          Perm.label(r.permission), Some(link), Some(s.userId))
                 _   <- activity.audit(Some(s.userId), s.viaString, "share.create", Some(n.id.toString), Json.obj("kind" -> r.kind.asJson))
+                _   <- skawau.observe.Metrics.count("skawau.shares.created", "kind" -> r.kind, "permission" -> r.permission, "via" -> s.viaString)
                 d   <- shares.dto(id, cfg.publicUrl)
                 res <- Created(d.get)
               yield res

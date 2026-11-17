@@ -58,12 +58,41 @@ object Uploads {
     }
   }
 
-  /** ドロップされたもの（フォルダを含む）を (ファイル, 相対パス) にする. 空のフォルダは除く. */
+  /**
+   * ドロップされたもの（フォルダを含む）を (ファイル, 相対パス) にする. 相対パスはフォルダの中のパス（"a/b"。直下は ""）. 空のフォルダは除く.
+   * フォルダは webkitGetAsEntry でたどる（Chrome・Edge・Firefox・Safari で使える）. 項目はドロップのイベントの中で読む必要があるので、最初に同期で取り出す.
+   */
   def collect(dt: dom.DataTransfer): Future[List[(dom.File, String)]] = {
-    dom.window.asInstanceOf[js.Dynamic].skawauDrop.collect(dt).asInstanceOf[js.Promise[js.Array[js.Dynamic]]].toFuture.map { arr =>
-      arr.toList.filter(x => x.file != null).map(x => (x.file.asInstanceOf[dom.File], x.path.asInstanceOf[String]))
-    }
+    val items   = dt.asInstanceOf[js.Dynamic].items
+    val files   = if (js.isUndefined(items) || items == null) Nil
+                  else (0 until items.length.asInstanceOf[Int]).map(i => items.selectDynamic(i.toString)).filter(_.kind.toString == "file").toList
+    val entries = files.map(i => if (js.isUndefined(i.webkitGetAsEntry)) null else i.webkitGetAsEntry())
+    if (entries.isEmpty || entries.exists(e => e == null || js.isUndefined(e)))
+      Future.successful(Option(dt.files).toList.flatMap(fs => (0 until fs.length).map(i => (fs(i), ""))))
+    else sequentially(entries)(walk(_, ""))
   }
+
+  private def sequentially[A, B](xs: List[A])(f: A => Future[List[B]]): Future[List[B]] =
+    xs.foldLeft(Future.successful(List.empty[B]))((acc, x) => acc.flatMap(a => f(x).map(a ++ _)))
+
+  /** FileSystemEntry の、成功と失敗のコールバックを取る関数を Future にする. */
+  private def callback[A](f: (js.Function1[A, Unit], js.Function1[js.Any, Unit]) => Any): Future[A] = {
+    val p = scala.concurrent.Promise[A]()
+    f((a: A) => { p.trySuccess(a); () }, (e: js.Any) => { p.tryFailure(js.JavaScriptException(e)); () })
+    p.future
+  }
+
+  private def walk(entry: js.Dynamic, base: String): Future[List[(dom.File, String)]] =
+    if (entry.isFile.asInstanceOf[Boolean]) callback[dom.File]((ok, ng) => entry.file(ok, ng)).map(f => List((f, base)))
+    else if (entry.isDirectory.asInstanceOf[Boolean]) {
+      val dir    = if (base.isEmpty) entry.name.toString else s"$base/${entry.name}"
+      val reader = entry.createReader()
+      // readEntries は一度に最大 100 件しか返さないため、空になるまで繰り返す
+      def readAll(acc: List[js.Dynamic]): Future[List[js.Dynamic]] =
+        callback[js.Array[js.Dynamic]]((ok, ng) => reader.readEntries(ok, ng))
+          .flatMap(b => if (b.length == 0) Future.successful(acc) else readAll(acc ++ b.toList))
+      readAll(Nil).flatMap(sequentially(_)(walk(_, dir)))
+    } else Future.successful(Nil)
 
   /** input type=file（webkitdirectory ならフォルダ）の change で選ばれたもの（同じファイルを選び直せるよう、入力欄は空にする）. */
   def picked(e: dom.Event): List[(dom.File, String)] = {

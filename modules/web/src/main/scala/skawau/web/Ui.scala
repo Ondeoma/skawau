@@ -4,7 +4,10 @@ import io.github.ondeoma.scalactive.components.ComponentManager.*
 import org.scalajs.dom
 import skawau.shared.*
 
-import scala.concurrent.Future
+import io.circe.Json
+
+import scala.concurrent.{Future, Promise}
+import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
 
 /** DOM のイベント・クリップボードの補助. */
@@ -149,25 +152,68 @@ object Opt {
   def of(xs: List[(String, String)]): List[Opt] = xs.map((v, l) => Opt(v, l))
 }
 
-/** ONLYOFFICE のエディタ（frontend/src/office.js）. */
+/** ONLYOFFICE のエディタ. api.js は Document Server から一度だけ読み込む. */
 object Office {
 
-  @js.native
-  trait Handle extends js.Object {
-    def destroy(): Unit = js.native
+  /** 開いたエディタ. destroy() で閉じる. */
+  final class Handle private[Office] (editor: js.Dynamic) {
+    def destroy(): Unit = try { editor.destroyEditor(); () } catch { case _: Throwable => () } // 閉じ済み
   }
 
-  def open(serverUrl: String, elementId: String, config: io.circe.Json): Future[Handle] =
-    dom.window.asInstanceOf[js.Dynamic].skawauOffice.load(serverUrl, elementId, js.JSON.parse(config.noSpaces))
-      .asInstanceOf[js.Promise[Handle]].toFuture
+  private val loaded = scala.collection.mutable.Map.empty[String, Future[Unit]]
+
+  private def loadScript(url: String): Future[Unit] = loaded.getOrElseUpdate(url, {
+    val p = Promise[Unit]()
+    val s = dom.document.createElement("script").asInstanceOf[dom.HTMLScriptElement]
+    s.src = url
+    s.addEventListener("load", (_: dom.Event) => p.trySuccess(()))
+    s.addEventListener("error", (_: dom.Event) => { loaded.remove(url); p.tryFailure(new Exception(s"Document Server に接続できません（$url）")) })
+    dom.document.head.appendChild(s)
+    p.future
+  })
+
+  def open(serverUrl: String, elementId: String, config: Json): Future[Handle] =
+    loadScript(serverUrl.stripSuffix("/") + "/web-apps/apps/api/documents/api.js").map { _ =>
+      val docs = dom.window.asInstanceOf[js.Dynamic].DocsAPI
+      if (js.isUndefined(docs)) throw new Exception("Document Server の api.js を読み込めませんでした")
+      val defaults = Json.obj("width" -> Json.fromString("100%"), "height" -> Json.fromString("100%"),
+        "type" -> Json.fromString(if (dom.window.innerWidth < 720) "mobile" else "desktop"))
+      val container = Option(dom.document.getElementById(elementId)).getOrElse(throw new Exception("エディタの置き場所がありません"))
+      // DocEditor は渡した要素を iframe に置き換えるため、画面の部品が持つ要素の中に置き場所を作って渡す
+      container.innerHTML = ""
+      val ph = dom.document.createElement("div")
+      ph.id = elementId + "-placeholder"
+      container.appendChild(ph)
+      new Handle(js.Dynamic.newInstance(docs.DocEditor)(ph.id, js.JSON.parse(defaults.deepMerge(config).noSpaces)))
+    }
 
 }
 
-/** 画像の加工（frontend/src/image.js）. */
+/** 画像の加工. */
 object Images {
-  /** 中央で正方形に切り取り、size px に縮めた PNG（読めない形式は元のファイル）. */
-  def squareThumb(file: dom.File, size: Int = 256): Future[dom.File] =
-    dom.window.asInstanceOf[js.Dynamic].skawauImage.squareThumb(file, size).asInstanceOf[js.Promise[dom.File]].toFuture
+  /** 中央で正方形に切り取り、size px に縮めた PNG（アイコンの登録用. GIF などで読めないときは元のファイル）. */
+  def squareThumb(file: dom.File, size: Int = 256): Future[dom.File] = {
+    val p   = Promise[dom.File]()
+    val url = dom.URL.createObjectURL(file)
+    val img = dom.document.createElement("img").asInstanceOf[dom.HTMLImageElement]
+    img.addEventListener("load", (_: dom.Event) => {
+      val (w, h) = (img.naturalWidth.toDouble, img.naturalHeight.toDouble)
+      val s      = math.min(w, h)
+      val side   = math.min(size.toDouble, s)
+      val canvas = dom.document.createElement("canvas").asInstanceOf[dom.HTMLCanvasElement]
+      canvas.width = side.toInt
+      canvas.height = side.toInt
+      canvas.getContext("2d").asInstanceOf[dom.CanvasRenderingContext2D].drawImage(img, (w - s) / 2, (h - s) / 2, s, s, 0, 0, canvas.width, canvas.height)
+      dom.URL.revokeObjectURL(url)
+      canvas.asInstanceOf[js.Dynamic].toBlob((b: dom.Blob) => p.trySuccess(
+        if (b == null) file
+        else js.Dynamic.newInstance(js.Dynamic.global.File)(js.Array(b), "avatar.png", js.Dynamic.literal(`type` = "image/png")).asInstanceOf[dom.File]
+      ), "image/png")
+    })
+    img.addEventListener("error", (_: dom.Event) => { dom.URL.revokeObjectURL(url); p.trySuccess(file) })
+    img.src = url
+    p.future
+  }
 }
 
 /** タブ・チップの見た目（選んでいるものに active を付ける. 画面の部品の中で呼ぶこと）. */

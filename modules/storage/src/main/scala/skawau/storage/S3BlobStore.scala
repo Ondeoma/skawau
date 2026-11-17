@@ -3,6 +3,7 @@ package skawau.storage
 import cats.effect.*
 import fs2.Stream
 import fs2.io.file.Path
+import skawau.observe.Telemetry
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
 import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.http.apache.ApacheHttpClient
@@ -21,21 +22,24 @@ final case class S3Config(
     pathStyle: Boolean = true // 自前の S3 互換ストレージはパス形式が扱いやすい
 )
 
-/** S3互換ストレージの実装。AWS SDKの同期クライアントを blocking プールで使う。 */
+/** S3互換ストレージの実装。AWS SDKの同期クライアントを blocking プールで使う。読み書きはトレースのスパン（s3.put など）にする。 */
 final class S3BlobStore private (client: S3Client, bucket: String) extends BlobStore:
 
+  private def span[A](op: String, key: String, kv: (String, String)*)(fa: IO[A]): IO[A] =
+    Telemetry.span(s"s3.$op", (List("aws.s3.bucket" -> bucket, "aws.s3.key" -> key) ++ kv)*)(fa)
+
   def put(key: String, file: Path, contentType: String): IO[Unit] =
-    IO.blocking {
+    span("put", key, "content_type" -> contentType)(IO.blocking {
       client.putObject(
         PutObjectRequest.builder().bucket(bucket).key(key).contentType(contentType).build(),
         RequestBody.fromFile(file.toNioPath)
       )
-    }.void
+    }.void)
 
   def get(key: String, range: Option[(Long, Option[Long])] = None): IO[Option[(BlobMeta, Stream[IO, Byte])]] =
     val req = GetObjectRequest.builder().bucket(bucket).key(key)
     range.foreach((from, to) => req.range(s"bytes=$from-${to.fold("")(_.toString)}"))
-    IO.blocking(client.getObject(req.build()))
+    span("get", key)(IO.blocking(client.getObject(req.build()))
       .map { in =>
         val r     = in.response()
         val ct    = Option(r.contentType()).getOrElse("application/octet-stream")
@@ -49,15 +53,15 @@ final class S3BlobStore private (client: S3Client, bucket: String) extends BlobS
       .recover {
         case _: NoSuchKeyException => None
         case e: S3Exception if e.statusCode() == 416 => None
-      }
+      })
 
   def delete(key: String): IO[Unit] =
-    IO.blocking(client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build())).void
+    span("delete", key)(IO.blocking(client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build())).void)
 
   def copy(from: String, to: String): IO[Boolean] =
-    IO.blocking {
+    span("copy", to, "aws.s3.copy_source" -> from)(IO.blocking {
       client.copyObject(CopyObjectRequest.builder().sourceBucket(bucket).sourceKey(from).destinationBucket(bucket).destinationKey(to).build())
-    }.as(true).recover { case _: NoSuchKeyException => false }
+    }.as(true).recover { case _: NoSuchKeyException => false })
 
   /** バケットがなければ作成する（開発環境向け。本番では事前作成を推奨）。 */
   def ensureBucket: IO[Unit] =

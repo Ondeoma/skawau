@@ -246,3 +246,7 @@ tr.drop-over td { background: var(--accent-weak) !important; outline: 2px dashed
 pre.text-view { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem;
   background: var(--side); border: 1px solid var(--line); border-radius: 8px; padding: .8rem; margin: 0; max-height: 75vh; overflow: auto; }
 textarea.text-edit { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem; min-height: 60vh; }
+
+/* 右上のユーザーのメニュー（項目は RouterLink もあるので、scoped ではなくここに書く） */
+header .menu a { display: block; white-space: nowrap; padding: .45rem .7rem; border-radius: 6px; color: var(--fg); text-decoration: none; }
+header .menu a:hover { background: var(--hover); text-decoration: none; }

@@ -16,6 +16,7 @@ import skawau.api.*
 import skawau.auth.{OidcClient, OidcConfig}
 import skawau.core.Actor
 import skawau.db.*
+import skawau.observe.{HttpClientTelemetry, HttpTelemetry, Metrics, RumRoutes, Telemetry}
 import skawau.shared.ErrorDto
 import skawau.storage.{S3BlobStore, S3Config}
 
@@ -110,16 +111,25 @@ object Config:
 
 object Main extends IOApp.Simple:
 
+  // ログにトレースの ID・操作したユーザーを載せるため、IOLocal の文脈を Java のライブラリから見えるようにする
+  // （IORuntime を作る前に設定する必要がある. オブジェクトの初期化は main より先に動く）
+  Telemetry.prepare()
+
+  private val version = Option(getClass.getPackage.getImplementationVersion).orElse(sys.env.get("APP_VERSION")).getOrElse("dev")
+
   private given org.typelevel.log4cats.LoggerFactory[IO] = org.typelevel.log4cats.slf4j.Slf4jFactory.create[IO]
 
   def run: IO[Unit] =
     for
       cfg <- Config.load
       n   <- migrateWithRetry(cfg)
-      _   <- IO.println(s"[skawau] database migrated ($n migration(s) applied); node ${cfg.nodeId}")
+      _   <- skawau.observe.Log.println(s"[skawau] database migrated ($n migration(s) applied); node ${cfg.nodeId}")
       _ <- (for
+        _     <- Telemetry.resource("skawau", version, runtime)
         xa    <- Database.transactor(cfg.db)
-        http  <- EmberClientBuilder.default[IO].withTimeout(55.seconds).withIdleConnectionTime(60.seconds).build
+        _     <- gauges(xa)
+        // 外への呼び出し（OIDC・Document Server・プッシュのサービス）もトレースに出す（traceparent を付けて送る）
+        http  <- EmberClientBuilder.default[IO].withTimeout(55.seconds).withIdleConnectionTime(60.seconds).build.map(HttpClientTelemetry(_))
         users    = new UserStore(xa)
         nodes    = new NodeStore(xa)
         shares   = new ShareStore(xa)
@@ -130,6 +140,9 @@ object Main extends IOApp.Simple:
         sess     = new SessionAuth(users, cfg.api)
         files    = new FileService(nodes, users, blobs, cfg.api)
         office   = new OfficeService(files, http, cfg.api)
+        pushStore = new skawau.push.PushStore(xa)
+        push    <- Resource.eval(skawau.push.PushService.create(pushStore, http, cfg.api.publicUrl, "skawau"))
+        notifier = new Notifier(activity, Some(push))
         topic   <- Resource.eval(fs2.concurrent.Topic[IO, FeedItem])
         feed     = new EventFeed(activity, topic)
         _ <- Resource.eval(startupNotes(cfg))
@@ -140,22 +153,26 @@ object Main extends IOApp.Simple:
             new AuthRoutes(oidc, users, activity, office, sess, cfg.api).routes <+>
             new UserRoutes(users, nodes, activity, files, blobs, sess).routes <+>
             new OfficeRoutes(office, files, nodes, shares, sess).routes <+>
-            new FileRoutes(files, nodes, shares, activity, users, sess, cfg.api).routes <+>
-            new PublicRoutes(files, nodes, shares, activity, office, sess, cfg.api).routes <+>
+            new FileRoutes(files, nodes, shares, activity, users, notifier, sess, cfg.api).routes <+>
+            new PublicRoutes(files, nodes, shares, office, notifier, sess, cfg.api).routes <+>
             new StreamRoutes(feed, sess).routes <+>
             new DavRoutes(files, nodes, sess).routes <+>
-            new OAuthRoutes(new OAuthStore(xa), nodes, activity, sess, cfg.api).routes
+            new OAuthRoutes(new OAuthStore(xa), nodes, activity, sess, cfg.api).routes <+>
+            RumRoutes.routes <+>
+            new PushRoutes(pushStore, push, sess).routes
         // MCP のツールは REST API を内部で呼ぶ
         all = rest <+> new McpRoutes(rest, sess, cfg.api.publicUrl).routes
         app = securityHeaders(cfg.staticDir.fold(all)(d => all <+> spa(d)))
+        // バックエンドの要求をトレース・メトリクス・アクセスログにする（画面のファイル・/healthz は除く）
+        httpApp <- HttpTelemetry(ErrorHandling.Custom.recoverWith(app.orNotFound)(handler), List("/api", "/auth", "/mcp", "/oauth", "/dav", "/onlyoffice"))
         _ <- EmberServerBuilder.default[IO]
                .withHost(ipv4"0.0.0.0")
                .withPort(Port.fromInt(cfg.port).getOrElse(port"8080"))
                .withShutdownTimeout(5.seconds)
                .withIdleTimeout(5.minutes)
-               .withHttpApp(ErrorHandling.Custom.recoverWith(app.orNotFound)(handler))
+               .withHttpApp(httpApp)
                .build
-        _ <- Resource.eval(IO.println(s"[skawau] listening on :${cfg.port} (${cfg.api.publicUrl})"))
+        _ <- Resource.eval(skawau.observe.Log.println(s"[skawau] listening on :${cfg.port} (${cfg.api.publicUrl})"))
       yield ()).useForever
     yield ()
 
@@ -163,7 +180,7 @@ object Main extends IOApp.Simple:
   private def migrateWithRetry(cfg: AppConfig, attempt: Int = 1): IO[Int] =
     Database.migrate(cfg.db).handleErrorWith { e =>
       if attempt >= 60 then IO.raiseError(e)
-      else IO.println(s"[skawau] database not ready (${e.getMessage.take(120)}); retry $attempt/60") *> IO.sleep(2.seconds) *> migrateWithRetry(cfg, attempt + 1)
+      else skawau.observe.Log.println(s"[skawau] database not ready (${e.getMessage.take(120)}); retry $attempt/60") *> IO.sleep(2.seconds) *> migrateWithRetry(cfg, attempt + 1)
     }
 
   /** ロードバランサー用のヘルスチェック。DB（プライマリ）に書けない状態なら 503。 */
@@ -181,15 +198,29 @@ object Main extends IOApp.Simple:
 
   private def blobStore(cfg: AppConfig): Resource[IO, Option[skawau.storage.BlobStore]] = cfg.s3 match
     case Some(c) => S3BlobStore.resource(c).evalTap(_.ensureBucket).map(Some(_))
-    case None    => Resource.eval(IO.println("[skawau] WARNING: S3_ENDPOINT が未設定のため、ファイルを保存できません").as(None))
+    case None    => Resource.eval(skawau.observe.Log.println("[skawau] WARNING: S3_ENDPOINT が未設定のため、ファイルを保存できません").as(None))
 
   private def startupNotes(cfg: AppConfig): IO[Unit] =
-    IO.whenA(cfg.oidc.isEmpty)(IO.println("[skawau] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください")) *>
-      IO.whenA(cfg.api.office.isEmpty)(IO.println("[skawau] ONLYOFFICE は未設定です（ONLYOFFICE_URL）。Office 文書はダウンロードだけできます"))
+    IO.whenA(cfg.oidc.isEmpty)(skawau.observe.Log.println("[skawau] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください")) *>
+      IO.whenA(cfg.api.office.isEmpty)(skawau.observe.Log.println("[skawau] ONLYOFFICE は未設定です（ONLYOFFICE_URL）。Office 文書はダウンロードだけできます"))
 
   private val handler: PartialFunction[Throwable, IO[Response[IO]]] = { case e =>
-    IO.println(s"[skawau] unhandled error: $e") *> InternalServerError(ErrorDto("サーバーでエラーが発生しました"))
+    IO(org.slf4j.LoggerFactory.getLogger("skawau").error("unhandled error", e)) *> InternalServerError(ErrorDto("サーバーでエラーが発生しました"))
   }
+
+  /** DB から定期的に読むメトリクス（skorimako のダッシュボード・アラート用）。 */
+  private def gauges(xa: doobie.Transactor[IO]): Resource[IO, Unit] =
+    def q(sqlText: doobie.Fragment): IO[Long] = sqlText.query[Long].unique.transact(xa)
+    List(
+      Metrics.gauge("skawau.users.total", "有効なユーザーの数")(q(sql"select count(*) from app_user where not disabled")),
+      Metrics.gauge("skawau.users.active_24h", "24時間以内にログインしたユーザーの数")(q(sql"select count(*) from app_user where last_login_at > now() - interval '24 hours'")),
+      Metrics.gauge("skawau.files.total", "ファイルの数（ごみ箱の中を含む）")(q(sql"select count(*) from node where not is_dir")),
+      Metrics.gauge("skawau.storage.used_bytes", "使用量の合計（バイト. 以前の版を含む）")(q(
+        sql"select (select coalesce(sum(size), 0) from node where not is_dir) + (select coalesce(sum(size), 0) from file_version)")),
+      Metrics.gauge("skawau.trash.items", "ごみ箱に入っているもの（起点）の数")(q(sql"select count(*) from node where deleted_at is not null")),
+      Metrics.gauge("skawau.shares.links", "公開リンクの数（期限切れを除く）")(q(sql"select count(*) from share where kind = 'link' and (expires_at is null or expires_at >= current_date)")),
+      Metrics.gauge("skawau.blob_trash.pending", "S3 から消す待ちの中身の数")(q(sql"select count(*) from blob_trash"))
+    ).sequence_
 
   /** 完全に削除したファイル・古い版の S3 の中身を消す（全ノードで動かし、SKIP LOCKED で取り合う）。 */
   private def blobLoop(nodes: NodeStore, blobs: Option[skawau.storage.BlobStore]): IO[Unit] =
@@ -198,11 +229,11 @@ object Main extends IOApp.Simple:
   /** 期限（TRASH_DAYS）を過ぎたごみ箱の中身を完全に削除する。 */
   private def trashLoop(nodes: NodeStore, lock: JobLock, cfg: AppConfig): IO[Unit] =
     Periodic.run(3.minutes, 1.hour)(e => s"[skawau] trash expiry failed: $e")(lock.exclusive("trash-expiry", 50.minutes)(
-      nodes.expiredTrash(cfg.api.trashDays, 500).flatMap(_.traverse_(n => nodes.purge(n, Actor(None, "system"))))))
+      Telemetry.span("trash.expiry")(nodes.expiredTrash(cfg.api.trashDays, 500).flatMap(_.traverse_(n => nodes.purge(n, Actor(None, "system")))))))
 
   private def purgeLoop(users: UserStore, activity: ActivityStore, lock: JobLock): IO[Unit] =
     Periodic.run(10.minutes, 1.hour)(e => s"[skawau] purge failed: $e")(lock.exclusive("purge", 50.minutes)(
-      IO.realTimeInstant.flatMap(users.purgeExpired) *> activity.purgeOld(180).void))
+      Telemetry.span("purge")(IO.realTimeInstant.flatMap(users.purgeExpired) *> activity.purgeOld(180).void)))
 
   /**
    * すべての応答に付けるセキュリティのヘッダー（個別に付けたものはそのまま）。

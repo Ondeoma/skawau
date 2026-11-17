@@ -35,7 +35,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
     IO.pure(cookie.fold(r)(r.addCookie))
 
   private def loggedIn(u: User, via: String): IO[ResponseCookie] =
-    sessions.issue(u).flatTap(_ => activity.audit(Some(u.id), via, "auth.login", None, Json.obj()))
+    sessions.issue(u).flatTap(_ => activity.audit(Some(u.id), via, "auth.login", None, Json.obj()) *> skawau.observe.Metrics.count("skawau.logins", "via" -> via))
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "auth" / "login" =>
