@@ -89,13 +89,11 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
       }
 
     def apply(method: Method, uri: Uri, body: Option[Json] = None): IO[Either[String, Json]] =
-      val req = body.fold(Request[IO](method, uri))(Request[IO](method, uri).withEntity(_))
-      run(req).flatMap(_.flatTraverse(r => r.bodyText.compile.string.map(s => Right(if s.isEmpty then Json.Null else parse(s).getOrElse(Json.fromString(s))))))
+      run(McpRoutes.request(method, uri, body)).flatMap(_.flatTraverse(r => r.bodyText.compile.string.map(s => Right(if s.isEmpty then Json.Null else parse(s).getOrElse(Json.fromString(s))))))
 
     def bytes(uri: Uri): IO[Either[String, Array[Byte]]] = run(Request[IO](Method.GET, uri)).flatMap(_.traverse(_.body.compile.to(Array)))
 
-    def putText(uri: Uri, text: String): IO[Either[String, Json]] =
-      run(Request[IO](Method.PUT, uri).withEntity(text)).flatMap(_.flatTraverse(r => r.bodyText.compile.string.map(s => Right(parse(s).getOrElse(Json.Null)))))
+    def putText(uri: Uri, text: String): IO[Either[String, Json]] = apply(Method.PUT, uri, Some(Json.fromString(text)))
 
   private def path(segments: String*): Uri = Uri(path = Uri.Path(segments.toVector.map(Uri.Path.Segment(_)), absolute = true))
 
@@ -116,7 +114,6 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
   private def int(d: String): Json  = Json.obj("type" -> "integer".asJson, "description" -> d.asJson)
   private def bool(d: String): Json = Json.obj("type" -> "boolean".asJson, "description" -> d.asJson)
   private def strs(d: String): Json = Json.obj("type" -> "array".asJson, "items" -> Json.obj("type" -> "string".asJson), "description" -> d.asJson)
-  private def obj(d: String): Json  = Json.obj("type" -> "object".asJson, "description" -> d.asJson)
 
   private val fileArg = "ファイル・フォルダの ID、または自分のルートからのパス（/資料/2026/報告.docx）"
 
@@ -331,9 +328,10 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
       IO.pure(Right(ApiCatalog.all.map(e => s"${e.method} ${e.path} — ${e.description}").mkString("\n")))
     },
 
-    Tool("call_api", "任意の REST API を呼ぶ（画面でできることはすべてできる。list_api_endpoints を参照）。JSON の API だけ（アップロードは write_file）。権限はこのキーの持ち主と同じ。",
+    Tool("call_api", "任意の REST API を呼ぶ（画面でできることはすべてできる。list_api_endpoints を参照）。権限はこのキーの持ち主と同じ。" +
+        "body がオブジェクト・配列なら JSON で送る。body が文字列なら、そのまま本文として送る（中身を置き換える PUT /api/files/{id}/content など。テキストのファイルを作るのは write_file）。",
       schema(List("method", "path"), "method" -> str("GET / POST / PUT / PATCH / DELETE"), "path" -> str("/api/ で始まるパス（クエリを含めてよい）"),
-        "body" -> obj("JSON の本文")), readOnly = false) { (call, a) =>
+        "body" -> Json.obj("description" -> "本文（オブジェクト・配列は JSON で送る。文字列はそのまま本文になる）".asJson)), readOnly = false) { (call, a) =>
       (need(a, "method").map(_.toUpperCase), need(a, "path")).tupled.withArgs { (m, p) =>
         (Method.fromString(m).toOption.filter(x => Set("GET", "POST", "PUT", "PATCH", "DELETE")(x.name)), Uri.fromString(p).toOption.filter(_.path.renderString.startsWith("/api/"))) match
           case (Some(method), Some(uri)) => call(method, uri, a.downField("body").focus.filterNot(_.isNull)).asText
@@ -411,3 +409,17 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
     case GET -> Root / "api" / "endpoints" =>
       Ok(ApiCatalog.all.map(e => Json.obj("method" -> e.method.asJson, "path" -> e.path.asJson, "description" -> e.description.asJson)))
   }
+
+object McpRoutes:
+
+  /**
+   * REST API を内部で呼ぶ要求。body が JSON の文字列なら、引用符で囲まず、そのまま本文にする
+   * （write_file のアップロードや中身の置き換えは本文がそのまま中身なので、JSON の文字列にすると `"<svg ...\n..."` のように壊れる）。
+   */
+  def request(method: Method, uri: Uri, body: Option[Json]): Request[IO] =
+    val req = Request[IO](method, uri)
+    body match
+      case None                  => req
+      // CirceEntityCodec を import した所では withEntity(String) も JSON の文字列になるので、文字のエンコーダーを明示する
+      case Some(j) if j.isString => req.withEntity(j.asString.getOrElse(""))(using EntityEncoder.stringEncoder)
+      case Some(j)               => req.withEntity(j)
