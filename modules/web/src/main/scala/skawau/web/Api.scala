@@ -114,7 +114,8 @@ object Api {
   def devLogin(name: String, email: String, admin: Boolean, groups: List[String], returnTo: String): Future[Json] =
     post[Json]("/auth/dev-login", Json.obj("name" -> name.asJson, "email" -> email.asJson, "admin" -> admin.asJson, "groups" -> groups.asJson,
       "returnTo" -> returnTo.asJson))
-  def logout(): Future[Unit] = postUnit("/auth/logout")
+  /** ログアウトして、次に開く URL（IdP のログアウト画面か「/」）を返す. */
+  def logout(): Future[String] = post[Json]("/auth/logout").map(_.hcursor.get[String]("redirect").getOrElse("/"))
   def updateMe(name: String): Future[Unit] = patchUnit("/api/me", UpdateMeReq(Some(name)).asJson)
   /** アイコンの画像を登録する（本文が画像そのもの）. */
   def setAvatar(file: dom.Blob): Future[io.circe.Json] = upload[io.circe.Json]("/api/me/avatar", file, (_, _) => ())._1

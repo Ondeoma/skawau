@@ -64,7 +64,7 @@ def search(s: State): Unit = {
   Router.go("/search?q=" + Api.enc(s.q.v.trim))
 }
 
-def logout(): Unit = Api.logout().foreach(_ => dom.window.location.href = "/")
+def logout(): Unit = Api.logout().onComplete(r => dom.window.location.href = r.getOrElse("/"))
 
 /** 左のメニューの項目（今いる場所なら強調）. */
 def navClass(prefix: String) = Router.href.mapC { h =>
