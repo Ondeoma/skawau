@@ -156,6 +156,6 @@ skea・skiwi に貼った skawau のファイル・フォルダの URL（`/view/
 - `POST /api/users/lookup {"emails":[…]}`（100件まで）で、メールアドレスが完全に一致する（大文字・小文字は区別しない）ユーザーを
   `{"users":[{"id","name","email"}]}` で返します（skaka が録画を参加者と共有するため）。
 - 開発用の値（`scripts/dev-env.sh`）: skea は `skea` / `skea-dev-secret-0123456789` / `http://localhost:8090/api/integrations/skawau/callback`、
-  skiwi は `skiwi` / `skiwi-dev-secret-0123456789` / `http://localhost:8080/api/integrations/skawau/callback`、
+  skiwi は `skiwi` / `skiwi-dev-secret-0123456789` / `http://localhost:5173/api/integrations/skawau/callback`、
   skaka は `skaka` / `skaka-dev-secret-0123456789` / `http://localhost:5177/api/integrations/skawau/callback`（`read write`）。
   連携元に入れる skawau の URL は `http://localhost:5176`（Vite が `/oauth`・`/api` を :8092 へ中継し、127.0.0.1 で待ち受ける）。
