@@ -1,15 +1,15 @@
 package skawau.api
 
 import cats.effect.*
-import cats.syntax.all.*
 import io.circe.Json
 import io.circe.syntax.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
-import org.http4s.headers.{`Content-Length`, `Content-Type`, Location}
+import org.http4s.headers.{`Content-Length`, `Content-Type`}
 import fs2.io.file.Files
 import skawau.storage.BlobStore
-import skawau.auth.{ApiKeys, Crypto, OidcClient}
+import sbirds.auth.Crypto
+import skawau.auth.ApiKeys
 import skawau.core.*
 import skawau.db.*
 import skawau.shared.*
@@ -17,202 +17,212 @@ import skawau.shared.*
 import java.time.Instant
 import java.util.UUID
 
-/** ログイン（OIDC・開発用）・ログアウト・画面の設定。 */
-final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: ActivityStore, office: OfficeService, val sessions: SessionAuth,
-    cfg: ApiConfig) extends RouteSupport:
-
-  /** ログイン後に戻る先（同じサイトのパスだけ）。 */
-  private def safeReturn(s: Option[String]): String =
-    ReturnTo.orRoot(s.filter(p => Uri.fromString(p).isRight))
-
-  /** OIDC の state をログインを始めたブラウザに結び付ける Cookie（ほかの人が始めたログインの callback を踏ませる攻撃を防ぐ）。 */
-  private val StateCookie = "skawau_login_state"
-  private def stateCookie(value: String, maxAge: Long) =
-    ResponseCookie(StateCookie, value, maxAge = Some(maxAge), path = Some("/auth"), httpOnly = true, secure = cfg.cookieSecure,
-      sameSite = Some(SameSite.Lax))
-
-  private def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] =
-    val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)))
-    IO.pure(cookie.fold(r)(r.addCookie))
-
-  private def loggedIn(u: User, via: String, idToken: Option[String] = None): IO[ResponseCookie] =
-    sessions.issue(u, idToken).flatTap(_ => activity.audit(Some(u.id), via, "auth.login", None, Json.obj()) *> skawau.observe.Metrics.count("skawau.logins", "via" -> via))
+/** 自分の情報・APIキー・通知、管理画面（ユーザー・監査ログ・統計）。 */
+final class UserRoutes(
+  users: UserStore,
+  nodes: NodeStore,
+  activity: ActivityStore,
+  files: FileService,
+  blobs: Option[BlobStore],
+  val sessions: SessionAuth) extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case req @ GET -> Root / "auth" / "login" =>
-      val back = safeReturn(param(req, "returnTo"))
-      oidc match
-        case Some(o) =>
-          val state = Crypto.randomToken(); val verifier = Crypto.randomToken(48); val nonce = Crypto.randomToken()
-          users.saveLoginState(state, verifier, nonce, back) *>
-            o.authorizationUri(state, verifier, nonce).flatMap(u => redirect(u.renderString, Some(stateCookie(state, 15 * 60))))
-        case None if cfg.devLogin => redirect(s"/login?returnTo=${java.net.URLEncoder.encode(back, "UTF-8")}")
-        case None                 => err(Status.ServiceUnavailable, "OIDC が設定されていません")
-
-    case req @ GET -> Root / "auth" / "callback" =>
-      (oidc, param(req, "code"), param(req, "state")) match
-        case (Some(o), Some(_), Some(state)) if !req.cookies.find(_.name == StateCookie).exists(c => Crypto.constantTimeEquals(c.content, state)) =>
-          err(Status.BadRequest, "ログインを始めたブラウザと違います。もう一度ログインしてください")
-        case (Some(o), Some(code), Some(state)) =>
-          users.takeLoginState(state).flatMap {
-            case None => err(Status.BadRequest, "ログインの有効期限が切れました。もう一度ログインしてください")
-            case Some((verifier, nonce, back)) =>
-              o.authenticate(code, verifier, nonce, Instant.now()).attempt.flatMap {
-                case Left(e) =>
-                  activity.audit(None, "web", "auth.denied", None, Json.obj("error" -> e.getMessage.asJson)) *>
-                    err(Status.Unauthorized, s"ログインできませんでした: ${e.getMessage}")
-                case Right(id) =>
-                  for
-                    u <- users.upsert(id.sub, id.name, id.email, id.picture)
-                    r <- if u.disabled then err(Status.Forbidden, "このユーザーは無効にされています")
-                         else users.syncGroups(u.id, id.groups) *> loggedIn(u, "web", id.idToken).flatMap(c => redirect(back, Some(c)).map(_.addCookie(stateCookie("", 0))))
-                  yield r
-              }
-          }
-        case (None, _, _) => err(Status.ServiceUnavailable, "OIDC が設定されていません")
-        case _            => err(Status.BadRequest, "code と state が必要です")
-
-    // ログアウト: セッションを消し、IdP にもログアウトを頼む（IdP のログインが残っていると、すぐにログインし直してしまうため）
-    case req @ POST -> Root / "auth" / "logout" if sameOrigin(req) =>
-      sessions.revoke(req).flatMap { (idToken, c) =>
-        oidc.flatTraverse(_.logoutUri(idToken, s"${cfg.publicUrl.stripSuffix("/")}/")).flatMap { idp =>
-          Ok(Json.obj("redirect" -> idp.fold("/")(_.renderString).asJson)).map(_.addCookie(c))
-        }
-      }
-
-    // 開発用: 名前だけでログインする（DEV_LOGIN=true のときだけ）
-    case req @ POST -> Root / "auth" / "dev-login" if cfg.devLogin && oidc.isEmpty =>
-      body[Json](req) { j =>
-        val c     = j.hcursor
-        val name  = c.get[String]("name").getOrElse("").trim
-        val admin = c.get[Boolean]("admin").getOrElse(false)
-        val groups = c.get[List[String]]("groups").getOrElse(Nil)
-        if name.isEmpty then err(Status.BadRequest, "名前を入力してください")
-        else
-          for
-            u0 <- users.upsert(s"dev:$name", name, c.get[String]("email").toOption.filter(_.contains("@")), None)
-            _  <- users.update(u0.id, Option.when(admin)(true), None, None)
-            _  <- users.syncGroups(u0.id, groups)
-            u  <- users.find(u0.id).map(_.getOrElse(u0))
-            ck <- loggedIn(u, "web")
-            r  <- Ok(Json.obj("redirect" -> safeReturn(c.get[String]("returnTo").toOption).asJson)).map(_.addCookie(ck))
-          yield r
-      }
-
-    case GET -> Root / "api" / "client-config" =>
-      Ok(ClientConfigDto(cfg.devLogin && oidc.isEmpty, cfg.version, office.info, s"${cfg.publicUrl}/dav/", s"${cfg.publicUrl}/mcp", cfg.maxUploadBytes, cfg.versionsKept,
-        cfg.trashDays))
+    case req @ GET -> Root / "api" / "me" => getMe(req)
+    case req @ PATCH -> Root / "api" / "me" => patchMe(req)
+    case req @ PUT -> Root / "api" / "me" / "avatar" => putMeAvatar(req)
+    case req @ DELETE -> Root / "api" / "me" / "avatar" => deleteMeAvatar(req)
+    case req @ GET -> Root / "api" / "users" / UuidVar(id) / "avatar" => getUserAvatar(req, id)
+    case req @ GET -> Root / "api" / "me" / "api-keys" => getMeApiKeys(req)
+    case req @ POST -> Root / "api" / "me" / "api-keys" => postMeApiKeys(req)
+    case req @ DELETE -> Root / "api" / "me" / "api-keys" / UuidVar(id) => deleteMeApiKey(req, id)
+    case req @ GET -> Root / "api" / "notifications" => getNotifications(req)
+    case req @ GET -> Root / "api" / "notifications" / "unread" => getNotificationsUnread(req)
+    case req @ POST -> Root / "api" / "notifications" / "read" => postNotificationsRead(req)
+    case req @ GET -> Root / "api" / "admin" / "users" => getAdminUsers(req)
+    case req @ PATCH -> Root / "api" / "admin" / "users" / UuidVar(id) => patchAdminUser(req, id)
+    case req @ GET -> Root / "api" / "admin" / "audit" => getAdminAudit(req)
+    case req @ GET -> Root / "api" / "admin" / "stats" => getAdminStats(req)
   }
 
-/** 自分の情報・APIキー・通知、管理画面（ユーザー・監査ログ・統計）。 */
-final class UserRoutes(users: UserStore, nodes: NodeStore, activity: ActivityStore, files: FileService, blobs: Option[BlobStore],
-    val sessions: SessionAuth) extends RouteSupport:
+  private def getMe(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(s => me(s).flatMap(m => sessions.appNames(req).flatMap(n => Ok(m.copy(appNames = n)))))
 
-  private val avatarTypes    = Set("image/png", "image/jpeg", "image/gif", "image/webp")
-  private val avatarMaxBytes = 2L * 1024 * 1024
+  private def patchMe(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(s => body[UpdateMeReq](req)(r => users.updateMe(s.userId, r.name) *> NoContent()))
 
-  /** アイコンを差し替える（URL は画像を変えるたびに変え、ブラウザのキャッシュを効かせる）。 */
-  private def replaceAvatar(uid: UUID, key: Option[String]): IO[Unit] =
-    users.setAvatar(uid, key, key.map(_ => s"/api/users/$uid/avatar?v=${Crypto.randomToken(6)}"))
-
-  /** 本文（画像）を一時ファイルに受け取って S3 に置く。 */
-  private def storeAvatar(s: AuthSession, store: BlobStore, ct: String, body: fs2.Stream[IO, Byte]): IO[Response[IO]] =
-    Files[IO].tempFile.use { tmp =>
-      body.take(avatarMaxBytes + 1).through(Files[IO].writeAll(tmp)).compile.drain *> Files[IO].size(tmp).flatMap { size =>
-        if size > avatarMaxBytes then err(Status.PayloadTooLarge, s"画像が大きすぎます（上限 ${Bytes.format(avatarMaxBytes)}）")
-        else if size == 0 then err(Status.BadRequest, "画像が空です")
-        else
-          val key = s"avatars/${s.userId}/${UUID.randomUUID()}"
-          store.put(key, tmp, ct) *> replaceAvatar(s.userId, Some(key)) *>
-            users.find(s.userId).flatMap(u => Ok(Json.obj("avatarUrl" -> u.flatMap(_.avatarUrl).asJson)))
+  private def putMeAvatar(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    sessionOnly(req) { s =>
+      val ct = req.contentType.map(c => s"${c.mediaType.mainType}/${c.mediaType.subType}").getOrElse("")
+      blobs match {
+        case None => err(ErrorCode.AvatarStorageNotConfigured)
+        case Some(_) if !avatarTypes(ct) => err(ErrorCode.AvatarFormatUnsupported)
+        case Some(store) => storeAvatar(s, store, ct, req.body)
       }
     }
 
-  private def me(s: AuthSession): IO[MeDto] =
-    files.quota(s.user).map(q => MeDto(s.user.id, s.user.name, s.user.email, s.user.avatarUrl, s.isAdmin, s.viaString, s.scopeStrings, q))
+  private def deleteMeAvatar(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s => replaceAvatar(s.userId, None) *> NoContent())
 
-  val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case req @ GET -> Root / "api" / "me" => authed(req)(s => me(s).flatMap(Ok(_)))
-
-    case req @ PATCH -> Root / "api" / "me" =>
-      authed(req)(s => body[UpdateMeReq](req)(r => users.updateMe(s.userId, r.name) *> NoContent()))
-
-    // ---------------------------------------------------------------- アイコン（本文が画像そのもの）
-
-    case req @ PUT -> Root / "api" / "me" / "avatar" =>
-      sessionOnly(req) { s =>
-        val ct = req.contentType.map(c => s"${c.mediaType.mainType}/${c.mediaType.subType}").getOrElse("")
-        blobs match
-          case None                             => err(Status.ServiceUnavailable, "画像の保存先（S3）が設定されていません")
-          case Some(_) if !avatarTypes(ct)      => err(Status.BadRequest, "PNG・JPEG・GIF・WebP の画像を選んでください")
-          case Some(store)                      => storeAvatar(s, store, ct, req.body)
-      }
-
-    case req @ DELETE -> Root / "api" / "me" / "avatar" =>
-      sessionOnly(req)(s => replaceAvatar(s.userId, None) *> NoContent())
-
-    case req @ GET -> Root / "api" / "users" / UuidVar(id) / "avatar" =>
-      authed(req)(_ => users.avatarKey(id).map(k => (k, blobs)).flatMap {
+  private def getUserAvatar(
+    req: Request[IO],
+    id: UUID
+  ): IO[Response[IO]] =
+    authed(req)(_ =>
+      users.avatarKey(id).map(k => (k, blobs)).flatMap {
         case (Some(key), Some(store)) => store.get(key).flatMap {
-            case None => err(Status.NotFound, "画像が見つかりません")
+            case None => err(ErrorCode.AvatarNotFound)
             case Some((meta, bytes)) =>
-              val mt = MediaType.parse(meta.contentType).toOption.filter(m => avatarTypes(s"${m.mainType}/${m.subType}")).getOrElse(MediaType.image.png)
+              val mt = MediaType.parse(meta.contentType).toOption.filter(m =>
+                avatarTypes(s"${m.mainType}/${m.subType}")
+              ).getOrElse(MediaType.image.png)
               IO.pure(Response[IO](Status.Ok).withBodyStream(bytes)
-                .putHeaders(`Content-Type`(mt), `Content-Length`.unsafeFromLong(meta.size), "X-Content-Type-Options" -> "nosniff",
-                  "Cache-Control" -> "private, max-age=86400"))
+                .putHeaders(
+                  `Content-Type`(mt),
+                  `Content-Length`.unsafeFromLong(meta.size),
+                  "X-Content-Type-Options" -> "nosniff",
+                  "Cache-Control" -> "private, max-age=86400"
+                ))
           }
-        case _ => err(Status.NotFound, "画像が登録されていません")
-      })
+        case _ => err(ErrorCode.AvatarNotSet)
+      }
+    )
 
-    // ---------------------------------------------------------------- APIキー（アプリパスワード。画面からのみ）
+  private def getMeApiKeys(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s => users.keys(s.userId).flatMap(Ok(_)))
 
-    case req @ GET -> Root / "api" / "me" / "api-keys" => sessionOnly(req)(s => users.keys(s.userId).flatMap(Ok(_)))
-
-    case req @ POST -> Root / "api" / "me" / "api-keys" =>
-      sessionOnly(req)(s => body[CreateApiKeyReq](req) { r =>
+  private def postMeApiKeys(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s =>
+      body[CreateApiKeyReq](req) { r =>
         val scopes = r.scopes.map(_.trim.toLowerCase).distinct
-        if r.name.trim.isEmpty then err(Status.BadRequest, "名前を入力してください")
-        else if scopes.isEmpty || !scopes.forall(ApiScope.all.contains) then err(Status.BadRequest, "スコープは read / write / admin から選んでください")
-        else if scopes.contains(ApiScope.Admin) && !s.isAdmin then err(Status.Forbidden, "admin スコープは管理者だけが使えます")
-        else
+        if r.name.trim.isEmpty then err(ErrorCode.NameRequired)
+        else if scopes.isEmpty || !scopes.forall(ApiScope.all.contains) then
+          err(ErrorCode.ApiKeyScopeInvalid)
+        else if scopes.contains(ApiScope.Admin) && !s.isAdmin then err(ErrorCode.ApiKeyAdminScopeAdminOnly)
+        else {
           val (key, prefix) = ApiKeys.generate()
           val exp = r.expiresInDays.filter(_ > 0).map(d => Instant.now().plusSeconds(d.toLong * 86400))
           users.createKey(s.userId, r.name.trim, prefix, Crypto.sha256(key), scopes, exp).flatMap { info =>
-            activity.audit(Some(s.userId), "web", "api_key.create", Some(info.id.toString), Json.obj("name" -> info.name.asJson, "scopes" -> scopes.asJson)) *>
+            activity.audit(
+              Some(s.userId),
+              "web",
+              "api_key.create",
+              Some(info.id.toString),
+              Json.obj("name" -> info.name.asJson, "scopes" -> scopes.asJson)
+            ) *>
               Created(CreatedApiKeyDto(key, info))
           }
-      })
+        }
+      }
+    )
 
-    case req @ DELETE -> Root / "api" / "me" / "api-keys" / UuidVar(id) =>
-      sessionOnly(req)(s => users.revokeKey(s.userId, id).ifM(
+  private def deleteMeApiKey(
+    req: Request[IO],
+    id: UUID
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s =>
+      users.revokeKey(s.userId, id).ifM(
         activity.audit(Some(s.userId), "web", "api_key.revoke", Some(id.toString), Json.obj()) *> NoContent(),
-        err(Status.NotFound, "APIキーが見つかりません")))
+        err(ErrorCode.ApiKeyNotFound)
+      )
+    )
 
-    // ---------------------------------------------------------------- 通知
+  private def getNotifications(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(s =>
+      activity.notifications(s.userId, boolParam(req, "unread"), intParam(req, "limit", 100, 500)).flatMap(Ok(_))
+    )
 
-    case req @ GET -> Root / "api" / "notifications" =>
-      authed(req)(s => activity.notifications(s.userId, boolParam(req, "unread"), intParam(req, "limit", 100, 500)).flatMap(Ok(_)))
+  private def getNotificationsUnread(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(s => activity.unread(s.userId).flatMap(n => Ok(UnreadDto(n))))
 
-    case req @ GET -> Root / "api" / "notifications" / "unread" => authed(req)(s => activity.unread(s.userId).flatMap(n => Ok(UnreadDto(n))))
+  private def postNotificationsRead(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(s => body[IdsReq](req)(r => activity.markRead(s.userId, r.ids) *> NoContent()))
 
-    case req @ POST -> Root / "api" / "notifications" / "read" =>
-      authed(req)(s => body[IdsReq](req)(r => activity.markRead(s.userId, r.ids) *> NoContent()))
+  private def getAdminUsers(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    admin(req)(_ => users.list(param(req, "q")).flatMap(Ok(_)))
 
-    // ---------------------------------------------------------------- 管理
-
-    case req @ GET -> Root / "api" / "admin" / "users" => admin(req)(_ => users.list(param(req, "q")).flatMap(Ok(_)))
-
-    case req @ PATCH -> Root / "api" / "admin" / "users" / UuidVar(id) =>
-      admin(req)(s => body[UpdateUserReq](req) { r =>
-        if id == s.userId && (r.isAdmin.contains(false) || r.disabled.contains(true)) then err(Status.BadRequest, "自分の管理者権限は外せません")
-        else
+  private def patchAdminUser(
+    req: Request[IO],
+    id: UUID
+  ): IO[Response[IO]] =
+    admin(req)(s =>
+      body[UpdateUserReq](req) { r =>
+        if id == s.userId && (r.isAdmin.contains(false) || r.disabled.contains(true)) then
+          err(ErrorCode.CannotRemoveOwnAdmin)
+        else {
           val quota = r.quotaMb.map(mb => Option.when(mb >= 0)(mb * 1024 * 1024))
           users.update(id, r.isAdmin, r.disabled, quota).ifM(
             activity.audit(Some(s.userId), s.viaString, "user.update", Some(id.toString), r.asJson) *> NoContent(),
-            err(Status.NotFound, "ユーザーが見つかりません"))
-      })
+            err(ErrorCode.UserNotFound)
+          )
+        }
+      }
+    )
 
-    case req @ GET -> Root / "api" / "admin" / "audit" => admin(req)(_ => activity.auditList(intParam(req, "limit", 200, 1000)).flatMap(Ok(_)))
+  private def getAdminAudit(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    admin(req)(_ => activity.auditList(intParam(req, "limit", 200, 1000)).flatMap(Ok(_)))
 
-    case req @ GET -> Root / "api" / "admin" / "stats" => admin(req)(_ => nodes.stats.flatMap(Ok(_)))
-  }
+  private def getAdminStats(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    admin(req)(_ => nodes.stats.flatMap(Ok(_)))
+
+  private val avatarTypes = Set("image/png", "image/jpeg", "image/gif", "image/webp")
+  private val avatarMaxBytes = 2L * 1024 * 1024
+
+  /** アイコンを差し替える（URL は画像を変えるたびに変え、ブラウザのキャッシュを効かせる）。 */
+  private def replaceAvatar(
+    uid: UUID,
+    key: Option[String]
+  ): IO[Unit] =
+    users.setAvatar(uid, key, key.map(_ => s"/api/users/$uid/avatar?v=${Crypto.randomToken(6)}"))
+
+  /** 本文（画像）を一時ファイルに受け取って S3 に置く。 */
+  private def storeAvatar(
+    s: AuthSession,
+    store: BlobStore,
+    ct: String,
+    body: fs2.Stream[IO, Byte]
+  ): IO[Response[IO]] =
+    Files[IO].tempFile.use { tmp =>
+      body.take(avatarMaxBytes + 1).through(Files[IO].writeAll(tmp)).compile.drain *> Files[IO].size(tmp).flatMap {
+        size =>
+          if size > avatarMaxBytes then err(ErrorCode.AvatarTooLarge, s"画像が大きすぎます（上限 ${Bytes.format(avatarMaxBytes)}）")
+          else if size == 0 then err(ErrorCode.AvatarEmpty)
+          else {
+            val key = s"avatars/${s.userId}/${UUID.randomUUID()}"
+            store.put(key, tmp, ct) *> replaceAvatar(s.userId, Some(key)) *>
+              users.find(s.userId).flatMap(u => Ok(Json.obj("avatarUrl" -> u.flatMap(_.avatarUrl).asJson)))
+          }
+      }
+    }
+
+  private def me(
+    s: AuthSession
+  ): IO[MeDto] =
+    files.quota(s.user).map(q =>
+      MeDto(s.user.id, s.user.name, s.user.email, s.user.avatarUrl, s.isAdmin, s.viaString, s.scopeStrings, q)
+    )
+
+}

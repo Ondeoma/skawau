@@ -10,15 +10,25 @@ import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
 import scala.util.{Failure, Success}
 
-final case class Toast(id: Int, text: String, link: Option[String], error: Boolean)
+final case class Toast(
+  id: Int,
+  text: String,
+  link: Option[String],
+  error: Boolean)
 
 /** プレビューで開いているファイル（同じフォルダの中で前後に送れる）. token は公開リンクで開いたとき. */
-final case class PreviewReq(items: List[NodeDto], index: Int, token: Option[String] = None) {
+final case class PreviewReq(
+  items: List[NodeDto],
+  index: Int,
+  token: Option[String] = None) {
   def current: NodeDto = items(index)
 }
 
 /** 移動・コピーのダイアログ. */
-final case class MoveReqUi(items: List[NodeDto], copy: Boolean, from: Option[UUID])
+final case class MoveReqUi(
+  items: List[NodeDto],
+  copy: Boolean,
+  from: Option[UUID])
 
 /** 画面全体で共有する状態と、変更の自動同期（SSE で知らせを受けて表示を取り直す. つながらないときは15秒ごと）. */
 object Store {
@@ -35,6 +45,7 @@ object Store {
   val shareFor: RV[Option[NodeDto]] = RV(None)
   val moveReq: RV[Option[MoveReqUi]] = RV(None)
   val preview: RV[Option[PreviewReq]] = RV(None)
+
   /** 左のメニュー（狭い画面で開閉する）. */
   val sideOpen: RV[Boolean] = RV(false)
 
@@ -46,22 +57,34 @@ object Store {
 
   // ---------------------------------------------------------------- トースト
 
-  def toast(text: String, link: Option[String] = None, error: Boolean = false): Unit = {
+  def toast(
+    text: String,
+    link: Option[String] = None,
+    error: Boolean = false
+  ): Unit = {
     toastSeq += 1
     val t = Toast(toastSeq, text, link, error)
     toasts := (toasts.v :+ t).takeRight(5)
     dom.window.setTimeout(() => dismiss(t.id), if (error) 9000 else 5000)
   }
 
-  def dismiss(id: Int): Unit = toasts := toasts.v.filterNot(_.id == id)
+  def dismiss(
+    id: Int
+  ): Unit = toasts := toasts.v.filterNot(_.id == id)
 
-  def error(e: Throwable): Unit = e match {
+  def error(
+    e: Throwable
+  ): Unit = e match {
     case ApiError(401, _) => ()
-    case other            => toast(other.getMessage, error = true)
+    case other => toast(other.getMessage, error = true)
   }
 
   /** Future の失敗をトーストで知らせる. */
-  def report[A](f: Future[A])(ok: A => Unit): Unit = f.onComplete {
+  def report[A](
+    f: Future[A]
+  )(
+    ok: A => Unit
+  ): Unit = f.onComplete {
     case Success(a) => ok(a)
     case Failure(e) => error(e)
   }
@@ -76,7 +99,8 @@ object Store {
   private var lastSync = 0.0
 
   /** 知らせが続けて届いてもまとめて1回だけ取り直す. */
-  private def soon(): Unit = if (pending.isEmpty) pending = Some(dom.window.setTimeout(() => { pending = None; refresh() }, 300))
+  private def soon(): Unit =
+    if (pending.isEmpty) pending = Some(dom.window.setTimeout(() => { pending = None; refresh() }, 300))
 
   private def live: Boolean = stream.exists(_.readyState == dom.EventSource.OPEN)
 
@@ -100,8 +124,16 @@ object Store {
 
   def startSync(): Unit = {
     // SSE でつながっている間は、念のため60秒ごとにだけ確認する
-    dom.window.setInterval(() => if (dom.document.visibilityState.toString == "visible" && (!live || js.Date.now() - lastSync > 60000)) refresh(), 15000)
-    dom.document.addEventListener("visibilitychange", (_: dom.Event) => if (dom.document.visibilityState.toString == "visible") refresh())
+    dom.window.setInterval(
+      () =>
+        if (dom.document.visibilityState.toString == "visible" && (!live || js.Date.now() - lastSync > 60000))
+          refresh(),
+      15000
+    )
+    dom.document.addEventListener(
+      "visibilitychange",
+      (_: dom.Event) => if (dom.document.visibilityState.toString == "visible") refresh()
+    )
   }
 
 }

@@ -5,7 +5,7 @@ import skawau.shared.FileKind
 import java.io.ByteArrayInputStream
 import java.util.zip.ZipInputStream
 
-class CoreSpec extends munit.FunSuite:
+class CoreSpec extends munit.FunSuite {
 
   test("名前の検査") {
     assertEquals(Names.invalid("資料.docx"), None)
@@ -62,9 +62,12 @@ class CoreSpec extends munit.FunSuite:
     assert(FileKind.inlineSafe("ok.pdf"))
   }
 
-  private def entries(bytes: Array[Byte]): List[String] =
+  private def entries(
+    bytes: Array[Byte]
+  ): List[String] = {
     val z = new ZipInputStream(new ByteArrayInputStream(bytes))
     Iterator.continually(z.getNextEntry).takeWhile(_ != null).map(_.getName).toList
+  }
 
   test("Office のひな形は必要な部品を持つ ZIP") {
     val docx = entries(OfficeTemplates.blank("docx"))
@@ -72,8 +75,13 @@ class CoreSpec extends munit.FunSuite:
     assert(docx.contains("word/document.xml") && docx.contains("word/styles.xml"))
     assert(entries(OfficeTemplates.blank("xlsx")).contains("xl/worksheets/sheet1.xml"))
     val pptx = entries(OfficeTemplates.blank("pptx"))
-    List("ppt/presentation.xml", "ppt/slides/slide1.xml", "ppt/slideMasters/slideMaster1.xml", "ppt/slideLayouts/slideLayout1.xml",
-      "ppt/theme/theme1.xml").foreach(p => assert(pptx.contains(p), p))
+    List(
+      "ppt/presentation.xml",
+      "ppt/slides/slide1.xml",
+      "ppt/slideMasters/slideMaster1.xml",
+      "ppt/slideLayouts/slideLayout1.xml",
+      "ppt/theme/theme1.xml"
+    ).foreach(p => assert(pptx.contains(p), p))
     assertEquals(OfficeTemplates.blank("txt").length, 0)
   }
 
@@ -89,28 +97,41 @@ class CoreSpec extends munit.FunSuite:
     }
   }
 
-  private def zip(parts: (String, String)*): Array[Byte] =
+  private def zip(
+    parts: (String, String)*
+  ): Array[Byte] = {
     val out = new java.io.ByteArrayOutputStream()
-    val z   = new java.util.zip.ZipOutputStream(out)
-    parts.foreach { (n, b) => z.putNextEntry(new java.util.zip.ZipEntry(n)); z.write(b.getBytes("UTF-8")); z.closeEntry() }
+    val z = new java.util.zip.ZipOutputStream(out)
+    parts.foreach {
+      (
+        n,
+        b
+      ) => z.putNextEntry(new java.util.zip.ZipEntry(n)); z.write(b.getBytes("UTF-8")); z.closeEntry()
+    }
     z.close()
     out.toByteArray
+  }
 
   test("Office 文書から文字を取り出す") {
     val w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-    val docx = zip("word/document.xml" -> s"""<w:document xmlns:w="$w"><w:body><w:p><w:r><w:t>見積</w:t></w:r><w:r><w:t>書</w:t></w:r></w:p><w:p><w:r><w:t>二行目</w:t></w:r></w:p></w:body></w:document>""")
+    val docx = zip("word/document.xml" ->
+      s"""<w:document xmlns:w="$w"><w:body><w:p><w:r><w:t>見積</w:t></w:r><w:r><w:t>書</w:t></w:r></w:p><w:p><w:r><w:t>二行目</w:t></w:r></w:p></w:body></w:document>""")
     assertEquals(OfficeText.extract("docx", docx), Right("見積書\n二行目"))
     val sml = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     val xlsx = zip(
       "xl/workbook.xml" -> s"""<workbook xmlns="$sml"><sheets><sheet name="売上" sheetId="1"/></sheets></workbook>""",
       "xl/sharedStrings.xml" -> s"""<sst xmlns="$sml"><si><t>品名</t></si><si><t>りんご</t></si></sst>""",
-      "xl/worksheets/sheet1.xml" -> s"""<worksheet xmlns="$sml"><sheetData><row><c t="s"><v>0</v></c><c><v>3</v></c></row><row><c t="s"><v>1</v></c><c><v>120</v></c></row></sheetData></worksheet>""")
+      "xl/worksheets/sheet1.xml" ->
+        s"""<worksheet xmlns="$sml"><sheetData><row><c t="s"><v>0</v></c><c><v>3</v></c></row><row><c t="s"><v>1</v></c><c><v>120</v></c></row></sheetData></worksheet>"""
+    )
     assertEquals(OfficeText.extract("xlsx", xlsx), Right("## 売上\n品名\t3\nりんご\t120"))
     val pptx = OfficeTemplates.blank("pptx")
     assertEquals(OfficeText.extract("pptx", pptx), Right("## スライド 1"))
   }
 
   test("DOCTYPE を含む XML は読まない（XXE 対策）") {
-    val evil = zip("word/document.xml" -> """<?xml version="1.0"?><!DOCTYPE d [<!ENTITY x SYSTEM "file:///etc/passwd">]><d>&x;</d>""")
+    val evil = zip("word/document.xml" ->
+      """<?xml version="1.0"?><!DOCTYPE d [<!ENTITY x SYSTEM "file:///etc/passwd">]><d>&x;</d>""")
     assert(OfficeText.extract("docx", evil).isLeft)
   }
+}

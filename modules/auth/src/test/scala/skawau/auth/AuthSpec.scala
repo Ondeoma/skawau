@@ -5,7 +5,7 @@ import io.circe.syntax.*
 
 import java.time.Instant
 
-class AuthSpec extends munit.FunSuite:
+class AuthSpec extends munit.FunSuite {
 
   test("JWT（HS256）の署名と検証") {
     val t = Jwt.sign(Json.obj("fid" -> "x".asJson), "secret-0123456789")
@@ -41,3 +41,4 @@ class AuthSpec extends munit.FunSuite:
     assert(ApiKeys.looksLike(key))
     assert(key.startsWith(prefix))
   }
+}

@@ -1,6 +1,6 @@
 package skawau.api
 
-class ServeSpec extends munit.FunSuite:
+class ServeSpec extends munit.FunSuite {
 
   test("Range ヘッダーの解釈") {
     assertEquals(Serve.parseRange(Some("bytes=0-99"), 1000), Some((0L, Some(99L))))
@@ -18,3 +18,4 @@ class ServeSpec extends munit.FunSuite:
     assertEquals(OnConflict.parse(Some("rename")), OnConflict.Rename)
     assertEquals(OnConflict.parse(None), OnConflict.Fail)
   }
+}

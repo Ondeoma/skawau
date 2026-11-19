@@ -52,6 +52,7 @@ def mounted(s: State): Unit = {
   if (p.startsWith("/login") || p.startsWith("/s/")) s.ready := true
   else Store.report(Api.me()) { me =>
     Store.me := Some(me)
+    AppNames.set(me.appNames)
     Observe.setUser(me.id.toString)
     Store.refresh()
     Store.connect()
@@ -88,7 +89,7 @@ def sideClass = Store.sideOpen.mapC(o => if (o) "side open" else "side")
 <template>
   <header v-if="framed" class="top">
     <button class="ghost only-sp burger" @click="Store.sideOpen := !Store.sideOpen.v">☰</button>
-    <RouterLink to="/files" class="logo"><span class="brand"><img src="/logo.svg" alt="" width="28" height="28">skawau</span></RouterLink>
+    <RouterLink to="/files" class="logo"><span class="brand"><img :src='AppNames.logo("/logo.svg").v' alt="" height="28" class="brand-logo">{{ AppNames.self }}</span></RouterLink>
     <form v-if="loggedIn" class="search hide-sp" @submit.prevent="search(s)">
       <input type="search" v-model="s.q" placeholder="ファイル・フォルダを検索">
     </form>

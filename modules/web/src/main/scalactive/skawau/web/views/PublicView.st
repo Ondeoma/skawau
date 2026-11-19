@@ -121,7 +121,7 @@ def noGrid = computed(false)
 <template>
   <div class="pub">
     <header class="ptop">
-      <img src="/logo.svg" alt="" width="26" height="26"><b class="brand">skawau</b>
+      <img :src='AppNames.logo("/logo.svg").v' alt="" height="26" class="brand-logo"><b class="brand">{{ AppNames.self }}</b>
       <span class="grow"></span>
       <a href="/files" class="small">ログイン</a>
     </header>
