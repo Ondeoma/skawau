@@ -15,13 +15,12 @@ import skawau.shared.*
 import java.time.Instant
 
 /** ログイン（OIDC・開発用）・ログアウト・画面の設定。 */
-final class AuthRoutes(
-  oidc: Option[OidcClient],
-  users: UserStore,
-  activity: ActivityStore,
-  office: OfficeService,
-  val sessions: SessionAuth,
-  cfg: ApiConfig) extends RouteSupport {
+final class AuthRoutes(oidc: Option[OidcClient],
+                       users: UserStore,
+                       activity: ActivityStore,
+                       office: OfficeService,
+                       val sessions: SessionAuth,
+                       cfg: ApiConfig) extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "auth" / "login" => getAuthLogin(req)
@@ -31,9 +30,7 @@ final class AuthRoutes(
     case GET -> Root / "api" / "client-config" => getClientConfig()
   }
 
-  private def getAuthLogin(
-    req: Request[IO]
-  ): IO[Response[IO]] = {
+  private def getAuthLogin(req: Request[IO]): IO[Response[IO]] = {
     val back = safeReturn(param(req, "returnTo"))
     oidc match {
       case Some(o) =>
@@ -47,9 +44,7 @@ final class AuthRoutes(
     }
   }
 
-  private def getAuthCallback(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getAuthCallback(req: Request[IO]): IO[Response[IO]] =
     (oidc, param(req, "code"), param(req, "state")) match {
       case (Some(o), Some(_), Some(state))
           if !req.cookies.find(_.name == StateCookie).exists(c => Crypto.constantTimeEquals(c.content, state)) =>
@@ -78,22 +73,15 @@ final class AuthRoutes(
       case _ => err(ErrorCode.LoginCodeStateRequired)
     }
 
-  private def postAuthLogout(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postAuthLogout(req: Request[IO]): IO[Response[IO]] =
     sessions.revoke(req).flatMap {
-      (
-        idToken,
-        c
-      ) =>
+      (idToken, c) =>
         oidc.flatTraverse(_.logoutUri(idToken, s"${cfg.publicUrl.stripSuffix("/")}/")).flatMap { idp =>
           Ok(Json.obj("redirect" -> idp.fold("/")(_.renderString).asJson)).map(_.addCookie(c))
         }
     }
 
-  private def postAuthDevLogin(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postAuthDevLogin(req: Request[IO]): IO[Response[IO]] =
     body[Json](req) { j =>
       val c = j.hcursor
       val name = c.get[String]("name").getOrElse("").trim
@@ -125,17 +113,12 @@ final class AuthRoutes(
     ))
 
   /** ログイン後に戻る先（同じサイトのパスだけ）。 */
-  private def safeReturn(
-    s: Option[String]
-  ): String =
+  private def safeReturn(s: Option[String]): String =
     ReturnTo.orRoot(s.filter(p => Uri.fromString(p).isRight))
 
   /** OIDC の state をログインを始めたブラウザに結び付ける Cookie（ほかの人が始めたログインの callback を踏ませる攻撃を防ぐ）。 */
   private val StateCookie = "skawau_login_state"
-  private def stateCookie(
-    value: String,
-    maxAge: Long
-  ) =
+  private def stateCookie(value: String, maxAge: Long) =
     ResponseCookie(
       StateCookie,
       value,
@@ -146,19 +129,12 @@ final class AuthRoutes(
       sameSite = Some(SameSite.Lax)
     )
 
-  private def redirect(
-    to: String,
-    cookie: Option[ResponseCookie] = None
-  ): IO[Response[IO]] = {
+  private def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] = {
     val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)))
     IO.pure(cookie.fold(r)(r.addCookie))
   }
 
-  private def loggedIn(
-    u: User,
-    via: String,
-    idToken: Option[String] = None
-  ): IO[ResponseCookie] =
+  private def loggedIn(u: User, via: String, idToken: Option[String] = None): IO[ResponseCookie] =
     sessions.issue(u, idToken).flatTap(_ =>
       activity.audit(Some(u.id), via, "auth.login", None, Json.obj()) *>
         sbirds.observe.Metrics.count("skawau.logins", "via" -> via)

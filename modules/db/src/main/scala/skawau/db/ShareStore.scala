@@ -13,27 +13,23 @@ import java.time.{Instant, LocalDate}
 import java.util.UUID
 
 /** 共有の行。 */
-final case class ShareRow(
-  id: UUID,
-  nodeId: UUID,
-  ownerId: UUID,
-  kind: String,
-  userId: Option[UUID],
-  groupId: Option[UUID],
-  permission: String,
-  token: Option[String],
-  passwordHash: Option[String],
-  expiresAt: Option[LocalDate],
-  label: Option[String],
-  createdAt: Instant) {
-  def expired(
-    today: LocalDate
-  ): Boolean = expiresAt.exists(_.isBefore(today))
+final case class ShareRow(id: UUID,
+                          nodeId: UUID,
+                          ownerId: UUID,
+                          kind: String,
+                          userId: Option[UUID],
+                          groupId: Option[UUID],
+                          permission: String,
+                          token: Option[String],
+                          passwordHash: Option[String],
+                          expiresAt: Option[LocalDate],
+                          label: Option[String],
+                          createdAt: Instant) {
+  def expired(today: LocalDate): Boolean = expiresAt.exists(_.isBefore(today))
 }
 
 /** 共有（ユーザー・グループ・公開リンク）。 */
-final class ShareStore(
-  xa: Transactor[IO]) extends TxStore(xa) {
+final class ShareStore(xa: Transactor[IO]) extends TxStore(xa) {
 
   private val cols =
     fr"s.id, s.node_id, s.owner_id, s.kind, s.user_id, s.group_id, s.permission, s.token, s.password_hash, s.expires_at, s.label, s.created_at"
@@ -44,11 +40,7 @@ final class ShareStore(
           o.id, o.name, o.avatar_url
           from share s join app_user o on o.id = s.owner_id left join app_user u on u.id = s.user_id left join user_group g on g.id = s.group_id"""
 
-  private def toDto(
-    base: String
-  )(
-    r: (ShareRow, Option[UserBrief], Option[GroupBrief], UserBrief)
-  ): ShareDto = {
+  private def toDto(base: String)(r: (ShareRow, Option[UserBrief], Option[GroupBrief], UserBrief)): ShareDto = {
     val (s, u, g, o) = r
     ShareDto(
       s.id,
@@ -67,19 +59,13 @@ final class ShareStore(
     )
   }
 
-  def find(
-    id: UUID
-  ): IO[Option[ShareRow]] = tx((fr"select" ++ cols ++ fr"from share s where s.id = $id").query[ShareRow].option)
+  def find(id: UUID): IO[Option[ShareRow]] =
+    tx((fr"select" ++ cols ++ fr"from share s where s.id = $id").query[ShareRow].option)
 
-  def byToken(
-    token: String
-  ): IO[Option[ShareRow]] =
+  def byToken(token: String): IO[Option[ShareRow]] =
     tx((fr"select" ++ cols ++ fr"from share s where s.kind = 'link' and s.token = $token").query[ShareRow].option)
 
-  def dto(
-    id: UUID,
-    base: String
-  ): IO[Option[ShareDto]] =
+  def dto(id: UUID, base: String): IO[Option[ShareDto]] =
     tx((dtoSelect ++ fr"where s.id = $id").query[(
       ShareRow,
       Option[UserBrief],
@@ -88,34 +74,26 @@ final class ShareStore(
     )].option).map(_.map(toDto(base)))
 
   /** ノードに付いている共有（祖先のものは含まない）。 */
-  def forNode(
-    nodeId: UUID,
-    base: String
-  ): IO[List[ShareDto]] =
+  def forNode(nodeId: UUID, base: String): IO[List[ShareDto]] =
     tx((dtoSelect ++ fr"where s.node_id = $nodeId order by s.kind desc, s.created_at")
       .query[(ShareRow, Option[UserBrief], Option[GroupBrief], UserBrief)].to[List]).map(_.map(toDto(base)))
 
   /** 自分が所有するファイルに付いている共有。 */
-  def byOwner(
-    ownerId: UUID,
-    base: String
-  ): IO[List[ShareDto]] =
+  def byOwner(ownerId: UUID, base: String): IO[List[ShareDto]] =
     tx((dtoSelect ++
       fr"join node n on n.id = s.node_id where n.owner_id = $ownerId and n.deleted_at is null order by s.created_at desc")
       .query[(ShareRow, Option[UserBrief], Option[GroupBrief], UserBrief)].to[List]).map(_.map(toDto(base)))
 
-  def create(
-    nodeId: UUID,
-    ownerId: UUID,
-    kind: String,
-    userId: Option[UUID],
-    groupId: Option[UUID],
-    permission: String,
-    token: Option[String],
-    passwordHash: Option[String],
-    expires: Option[LocalDate],
-    label: Option[String]
-  ): IO[Either[AppError, UUID]] = {
+  def create(nodeId: UUID,
+             ownerId: UUID,
+             kind: String,
+             userId: Option[UUID],
+             groupId: Option[UUID],
+             permission: String,
+             token: Option[String],
+             passwordHash: Option[String],
+             expires: Option[LocalDate],
+             label: Option[String]): IO[Either[AppError, UUID]] = {
     val id = UUID.randomUUID()
     tx(
       sql"""insert into share (id, node_id, owner_id, kind, user_id, group_id, permission, token, password_hash, expires_at, label)
@@ -128,13 +106,11 @@ final class ShareStore(
   }
 
   /** password・expires は Some(None) で外す。 */
-  def update(
-    id: UUID,
-    permission: Option[String],
-    passwordHash: Option[Option[String]],
-    expires: Option[Option[LocalDate]],
-    label: Option[Option[String]]
-  ): IO[Unit] = {
+  def update(id: UUID,
+             permission: Option[String],
+             passwordHash: Option[Option[String]],
+             expires: Option[Option[LocalDate]],
+             label: Option[Option[String]]): IO[Unit] = {
     val sets = List(
       permission.map(v => fr"permission = $v"),
       passwordHash.map(v => fr"password_hash = $v"),
@@ -144,14 +120,10 @@ final class ShareStore(
     if sets.isEmpty then IO.unit else tx((fr"update share" ++ Sql.set(sets) ++ fr"where id = $id").update.run.void)
   }
 
-  def delete(
-    id: UUID
-  ): IO[Unit] = tx(sql"delete from share where id = $id".update.run.void)
+  def delete(id: UUID): IO[Unit] = tx(sql"delete from share where id = $id".update.run.void)
 
   /** 共有の相手（グループはその所属者。所有者は除く）。通知に使う。 */
-  def recipients(
-    s: ShareRow
-  ): IO[List[UUID]] = tx(
+  def recipients(s: ShareRow): IO[List[UUID]] = tx(
     (s.userId, s.groupId) match {
       case (Some(u), _) => List(u).filterNot(_ == s.ownerId).pure[ConnectionIO]
       case (_, Some(g)) =>

@@ -12,17 +12,14 @@ import scala.scalajs.js
 object Office {
 
   /** 開いたエディタ. destroy() で閉じる. */
-  final class Handle private[Office] (
-    editor: js.Dynamic) {
+  final class Handle private[Office] (editor: js.Dynamic) {
     def destroy(): Unit = try { editor.destroyEditor(); () }
     catch { case _: Throwable => () } // 閉じ済み
   }
 
   private val loaded = scala.collection.mutable.Map.empty[String, Future[Unit]]
 
-  private def loadScript(
-    url: String
-  ): Future[Unit] = loaded.getOrElseUpdate(
+  private def loadScript(url: String): Future[Unit] = loaded.getOrElseUpdate(
     url, {
       val p = Promise[Unit]()
       val s = dom.document.createElement("script").asInstanceOf[dom.HTMLScriptElement]
@@ -37,11 +34,7 @@ object Office {
     }
   )
 
-  def open(
-    serverUrl: String,
-    elementId: String,
-    config: Json
-  ): Future[Handle] =
+  def open(serverUrl: String, elementId: String, config: Json): Future[Handle] =
     loadScript(serverUrl.stripSuffix("/") + "/web-apps/apps/api/documents/api.js").map { _ =>
       val docs = dom.window.asInstanceOf[js.Dynamic].DocsAPI
       if (js.isUndefined(docs)) throw new Exception("Document Server の api.js を読み込めませんでした")

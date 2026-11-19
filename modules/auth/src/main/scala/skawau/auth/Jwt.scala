@@ -18,21 +18,14 @@ object Jwt {
   private val dec = Base64.getUrlDecoder
   private val header = enc.encodeToString("""{"alg":"HS256","typ":"JWT"}""".getBytes(StandardCharsets.UTF_8))
 
-  def sign(
-    payload: Json,
-    secret: String
-  ): String = {
+  def sign(payload: Json, secret: String): String = {
     val body = enc.encodeToString(payload.noSpaces.getBytes(StandardCharsets.UTF_8))
     val sig = enc.encodeToString(Crypto.hmacSha256(secret, s"$header.$body".getBytes(StandardCharsets.UTF_8)))
     s"$header.$body.$sig"
   }
 
   /** 署名と期限（exp があれば）を確かめてペイロードを返す。 */
-  def verify(
-    token: String,
-    secret: String,
-    now: Instant = Instant.now()
-  ): Either[String, Json] =
+  def verify(token: String, secret: String, now: Instant = Instant.now()): Either[String, Json] =
     token.split('.') match {
       case Array(h, b, s) =>
         for {

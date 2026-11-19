@@ -6,10 +6,7 @@ package skawau.core
  * 4xxx: Office 文書（ONLYOFFICE）, 5xxx: ユーザー・APIキー・アイコン, 6xxx: ほかのサービスとの連携（OAuth の API）,
  * 9xxx: サーバー内部・バックグラウンドの処理.
  */
-enum ErrorCode(
-  val code: String,
-  val status: Int,
-  val message: String) extends sbirds.shared.ErrorCode {
+enum ErrorCode(val code: String, val status: Int, val message: String) extends sbirds.shared.ErrorCode {
   case NotLoggedIn extends ErrorCode("SKAWAU-1001", 401, "ログインしてください")
   case CrossSiteRequest extends ErrorCode("SKAWAU-1002", 403, "ほかのサイトからの要求は受け付けません")
   case ApiKeyNeedsWrite extends ErrorCode("SKAWAU-1003", 403, "このAPIキーは参照専用です（write スコープが必要です）")

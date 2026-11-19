@@ -20,10 +20,7 @@ import java.util.UUID
  * クラス 1 と、Finder・Windows のために形だけの LOCK / UNLOCK（クラス 2）に対応する。PROPPATCH は受け付けるだけ。
  * 削除はごみ箱へ、上書きは新しい版になる。
  */
-final class DavRoutes(
-  files: FileService,
-  nodes: NodeStore,
-  val sessions: SessionAuth) extends RouteSupport {
+final class DavRoutes(files: FileService, nodes: NodeStore, val sessions: SessionAuth) extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes[IO] { req =>
     cats.data.OptionT.fromOption[IO](segmentsOf(req.pathInfo)).semiflatMap { segs =>
@@ -50,21 +47,15 @@ final class DavRoutes(
 
   private val Prefix = "dav"
 
-  private def xml(
-    status: Status,
-    body: String
-  ): Response[IO] =
+  private def xml(status: Status, body: String): Response[IO] =
     Response[IO](status).withEntity(body).putHeaders("Content-Type" -> "application/xml; charset=utf-8")
 
-  private def esc(
-    s: String
-  ): String = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+  private def esc(s: String): String =
+    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
-  private def href(
-    segs: List[String],
-    dir: Boolean
-  ): String = ("/" + (Prefix :: segs.map(UrlPath.encodeSegment)).mkString("/")) +
-    (if dir && segs.nonEmpty then "/" else if segs.isEmpty then "/" else "")
+  private def href(segs: List[String], dir: Boolean): String =
+    ("/" + (Prefix :: segs.map(UrlPath.encodeSegment)).mkString("/")) +
+      (if dir && segs.nonEmpty then "/" else if segs.isEmpty then "/" else "")
 
   private def unauthorized: IO[Response[IO]] =
     IO.pure(Response[IO](Status.Unauthorized).putHeaders(`WWW-Authenticate`(Challenge(
@@ -75,27 +66,19 @@ final class DavRoutes(
       .withEntity("アプリパスワードでログインしてください"))
 
   /** パスのセグメント（/dav より後ろ、デコード済み）。 */
-  private def segmentsOf(
-    path: Uri.Path
-  ): Option[List[String]] =
+  private def segmentsOf(path: Uri.Path): Option[List[String]] =
     path.segments.toList.map(_.decoded()) match {
       case Prefix :: rest => Some(rest.map(Names.normalize).filter(_.nonEmpty))
       case _ => None
     }
 
   /** Destination ヘッダー（絶対 URL またはパス）のセグメント。 */
-  private def destination(
-    req: Request[IO]
-  ): Option[List[String]] =
+  private def destination(req: Request[IO]): Option[List[String]] =
     req.headers.get(CIString("Destination")).map(_.head.value).flatMap(d => Uri.fromString(d).toOption).flatMap(u =>
       segmentsOf(u.path)
     )
 
-  private def prop(
-    n: Node,
-    segs: List[String],
-    quota: Option[(Long, Option[Long])]
-  ): String = {
+  private def prop(n: Node, segs: List[String], quota: Option[(Long, Option[Long])]): String = {
     val common =
       s"<d:displayname>${esc(if n.isRoot then "skawau" else n.name)}</d:displayname>" +
         s"<d:getlastmodified>${Serve.httpDate.format(n.updatedAt)}</d:getlastmodified>" +
@@ -105,56 +88,36 @@ final class DavRoutes(
       if n.isDir then "<d:resourcetype><d:collection/></d:resourcetype>"
       else
         s"<d:resourcetype/><d:getcontentlength>${n.size}</d:getcontentlength><d:getcontenttype>${esc(n.contentType.getOrElse(FileKind.contentType(n.name)))}</d:getcontenttype>"
-    val q = quota.fold("")(
-      (
-        used,
-        limit
-      ) =>
-        s"<d:quota-used-bytes>$used</d:quota-used-bytes>" +
-          limit.fold("")(l => s"<d:quota-available-bytes>${math.max(0L, l - used)}</d:quota-available-bytes>")
+    val q = quota.fold("")((used, limit) =>
+      s"<d:quota-used-bytes>$used</d:quota-used-bytes>" +
+        limit.fold("")(l => s"<d:quota-available-bytes>${math.max(0L, l - used)}</d:quota-available-bytes>")
     )
     s"<d:response><d:href>${esc(href(segs, n.isDir))}</d:href><d:propstat><d:prop>$common$kind$q</d:prop>" +
       "<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
   }
 
-  private def multistatus(
-    body: String
-  ): String =
+  private def multistatus(body: String): String =
     """<?xml version="1.0" encoding="utf-8"?><d:multistatus xmlns:d="DAV:">""" + body + "</d:multistatus>"
 
   /** 1つの WebDAV の要求（対象のパスと利用者）. */
-  private final case class DavReq(
-    req: Request[IO],
-    s: AuthSession,
-    root: Node,
-    segs: List[String]) {
+  private final case class DavReq(req: Request[IO], s: AuthSession, root: Node, segs: List[String]) {
     val v: Viewer = Viewer.of(s)
     val actor: Actor = Actor.of(s)
     def target: IO[Option[Node]] = nodes.resolve(root.id, segs)
     def parent: IO[Option[Node]] = nodes.resolve(root.id, segs.dropRight(1)).map(_.filter(_.isDir))
   }
 
-  private def status(
-    st: Status,
-    msg: String = ""
-  ): IO[Response[IO]] = IO.pure(Response[IO](st).withEntity(msg))
+  private def status(st: Status, msg: String = ""): IO[Response[IO]] = IO.pure(Response[IO](st).withEntity(msg))
 
   // WebDAV では同じ名前の衝突は 412（Precondition Failed）で返す
-  private def failed(
-    f: AppError
-  ): IO[Response[IO]] =
+  private def failed(f: AppError): IO[Response[IO]] =
     Errors.log(f) *>
       status(
         if f.status == 409 then Status.PreconditionFailed else Status.fromInt(f.status).getOrElse(Status.BadRequest),
         f.message
       )
 
-  private def handle(
-    req: Request[IO],
-    s: AuthSession,
-    root: Node,
-    segs: List[String]
-  ): IO[Response[IO]] = {
+  private def handle(req: Request[IO], s: AuthSession, root: Node, segs: List[String]): IO[Response[IO]] = {
     val d = DavReq(req, s, root, segs)
     req.method.name match {
       case "PROPFIND" => propfind(d)
@@ -170,9 +133,7 @@ final class DavRoutes(
     }
   }
 
-  private def propfind(
-    d: DavReq
-  ): IO[Response[IO]] = {
+  private def propfind(d: DavReq): IO[Response[IO]] = {
     import d.*
     target.flatMap {
       case None => status(Status.NotFound)
@@ -180,10 +141,7 @@ final class DavRoutes(
         val depth0 = req.headers.get(CIString("Depth")).exists(_.head.value.trim == "0")
         val quota = if n.isRoot then files.quota(s.user).map(q => Some((q.used, q.limit))) else IO.pure(None)
         (quota, if n.isDir && !depth0 then nodes.childrenRaw(n.id) else IO.pure(Nil)).tupled.map {
-          (
-            q,
-            kids
-          ) =>
+          (q, kids) =>
             xml(
               Status.MultiStatus,
               multistatus(prop(n, segs, q) + kids.map(c => prop(c, segs :+ c.name, None)).mkString)
@@ -192,9 +150,7 @@ final class DavRoutes(
     }
   }
 
-  private def get(
-    d: DavReq
-  ): IO[Response[IO]] = {
+  private def get(d: DavReq): IO[Response[IO]] = {
     import d.*
     target.flatMap {
       case Some(n) if !n.isDir =>
@@ -204,9 +160,7 @@ final class DavRoutes(
     }
   }
 
-  private def put(
-    d: DavReq
-  ): IO[Response[IO]] = {
+  private def put(d: DavReq): IO[Response[IO]] = {
     import d.*
     if segs.isEmpty then status(Status.MethodNotAllowed)
     else
@@ -225,9 +179,7 @@ final class DavRoutes(
       }
   }
 
-  private def mkcol(
-    d: DavReq
-  ): IO[Response[IO]] = {
+  private def mkcol(d: DavReq): IO[Response[IO]] = {
     import d.*
     target.flatMap {
       case Some(_) => status(Status.MethodNotAllowed, "すでにあります")
@@ -239,9 +191,7 @@ final class DavRoutes(
     }
   }
 
-  private def delete(
-    d: DavReq
-  ): IO[Response[IO]] = {
+  private def delete(d: DavReq): IO[Response[IO]] = {
     import d.*
     target.flatMap {
       case None => status(Status.NotFound)
@@ -249,10 +199,7 @@ final class DavRoutes(
     }
   }
 
-  private def transfer(
-    d: DavReq,
-    asCopy: Boolean
-  ): IO[Response[IO]] = {
+  private def transfer(d: DavReq, asCopy: Boolean): IO[Response[IO]] = {
     import d.*
     val overwrite = !req.headers.get(CIString("Overwrite")).exists(_.head.value.trim.equalsIgnoreCase("F"))
     (target, IO.pure(destination(req).filter(_.nonEmpty))).tupled.flatMap {
@@ -273,9 +220,7 @@ final class DavRoutes(
     }
   }
 
-  private def lock(
-    d: DavReq
-  ): IO[Response[IO]] = {
+  private def lock(d: DavReq): IO[Response[IO]] = {
     import d.*
     val token = s"opaquelocktoken:${UUID.randomUUID()}"
     val body = multistatusLock(token, href(segs, dir = false))
@@ -294,9 +239,7 @@ final class DavRoutes(
     }
   }
 
-  private def proppatch(
-    d: DavReq
-  ): IO[Response[IO]] = {
+  private def proppatch(d: DavReq): IO[Response[IO]] = {
     import d.*
     target.flatMap {
       case None => status(Status.NotFound)
@@ -309,10 +252,7 @@ final class DavRoutes(
     }
   }
 
-  private def multistatusLock(
-    token: String,
-    path: String
-  ): String =
+  private def multistatusLock(token: String, path: String): String =
     """<?xml version="1.0" encoding="utf-8"?><d:prop xmlns:d="DAV:"><d:lockdiscovery><d:activelock>""" +
       "<d:locktype><d:write/></d:locktype><d:lockscope><d:exclusive/></d:lockscope><d:depth>infinity</d:depth>" +
       s"<d:timeout>Second-3600</d:timeout><d:locktoken><d:href>$token</d:href></d:locktoken>" +

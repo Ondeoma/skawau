@@ -19,30 +19,21 @@ object OfficeTemplates {
     "md" -> "Markdown"
   )
 
-  def supports(
-    ext: String
-  ): Boolean = kinds.exists(_._1 == ext)
+  def supports(ext: String): Boolean = kinds.exists(_._1 == ext)
 
   /** 拡張子に応じた空の中身（Office 以外は空のバイト列）。 */
-  def blank(
-    ext: String
-  ): Array[Byte] = ext match {
+  def blank(ext: String): Array[Byte] = ext match {
     case "docx" => zip(docx)
     case "xlsx" => zip(xlsx)
     case "pptx" => zip(pptx)
     case _ => Array.emptyByteArray
   }
 
-  private def zip(
-    parts: List[(String, String)]
-  ): Array[Byte] = {
+  private def zip(parts: List[(String, String)]): Array[Byte] = {
     val out = new ByteArrayOutputStream()
     val z = new ZipOutputStream(out)
     parts.foreach {
-      (
-        name,
-        body
-      ) =>
+      (name, body) =>
         {
           z.putNextEntry(new ZipEntry(name))
           z.write(body.getBytes(StandardCharsets.UTF_8))
@@ -56,29 +47,15 @@ object OfficeTemplates {
   private val Xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""" + "\n"
   private val RelNs = "http://schemas.openxmlformats.org/package/2006/relationships"
   private val R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-  private def rels(
-    items: (String, String, String)*
-  ): String =
+  private def rels(items: (String, String, String)*): String =
     Xml + s"""<Relationships xmlns="$RelNs">""" +
-      items.map(
-        (
-          id,
-          tpe,
-          target
-        ) => s"""<Relationship Id="$id" Type="$R/$tpe" Target="$target"/>"""
-      ).mkString + "</Relationships>"
-  private def types(
-    overrides: (String, String)*
-  ): String =
+      items.map((id, tpe, target) => s"""<Relationship Id="$id" Type="$R/$tpe" Target="$target"/>""").mkString +
+      "</Relationships>"
+  private def types(overrides: (String, String)*): String =
     Xml + """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">""" +
       """<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>""" +
       """<Default Extension="xml" ContentType="application/xml"/>""" +
-      overrides.map(
-        (
-          p,
-          t
-        ) => s"""<Override PartName="$p" ContentType="$t"/>"""
-      ).mkString + "</Types>"
+      overrides.map((p, t) => s"""<Override PartName="$p" ContentType="$t"/>""").mkString + "</Types>"
   private val Ooxml = "application/vnd.openxmlformats-officedocument"
 
   // ---------------------------------------------------------------- docx（A4 縦）
@@ -142,22 +119,13 @@ object OfficeTemplates {
   private val NoOverride = """<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>"""
 
   /** プレースホルダー（位置を書くのはレイアウトだけ。スライドはレイアウトの位置を引き継ぐ）。 */
-  private def placeholder(
-    id: Int,
-    name: String,
-    tpe: String,
-    idx: Option[Int],
-    pos: Option[(Long, Long, Long, Long)],
-    size: Int
-  ): String = {
-    val xfrm = pos.fold("")(
-      (
-        x,
-        y,
-        cx,
-        cy
-      ) => s"""<a:xfrm><a:off x="$x" y="$y"/><a:ext cx="$cx" cy="$cy"/></a:xfrm>"""
-    )
+  private def placeholder(id: Int,
+                          name: String,
+                          tpe: String,
+                          idx: Option[Int],
+                          pos: Option[(Long, Long, Long, Long)],
+                          size: Int): String = {
+    val xfrm = pos.fold("")((x, y, cx, cy) => s"""<a:xfrm><a:off x="$x" y="$y"/><a:ext cx="$cx" cy="$cy"/></a:xfrm>""")
     val anchor = if tpe == "ctrTitle" then """ anchor="b"""" else ""
     val ph = s"""<p:ph type="$tpe"${idx.fold("")(i => s""" idx="$i"""")}/>"""
     val run = if pos.isDefined then s"""<a:lvl1pPr algn="ctr"><a:defRPr sz="$size"/></a:lvl1pPr>""" else ""
@@ -208,10 +176,7 @@ object OfficeTemplates {
   )
 
   private def theme: String = {
-    def color(
-      n: String,
-      v: String
-    ) = s"""<a:$n><a:srgbClr val="$v"/></a:$n>"""
+    def color(n: String, v: String) = s"""<a:$n><a:srgbClr val="$v"/></a:$n>"""
     val fill = """<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>"""
     val line = s"""<a:ln w="6350">$fill</a:ln>"""
     val eff = """<a:effectStyle><a:effectLst/></a:effectStyle>"""

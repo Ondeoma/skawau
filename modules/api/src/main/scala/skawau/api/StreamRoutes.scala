@@ -18,9 +18,7 @@ enum FeedItem {
     userId: UUID)
 }
 
-final class StreamRoutes(
-  feed: EventFeed,
-  val sessions: SessionAuth) extends RouteSupport {
+final class StreamRoutes(feed: EventFeed, val sessions: SessionAuth) extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
 
@@ -28,9 +26,7 @@ final class StreamRoutes(
     case req @ GET -> Root / "api" / "stream" => getStream(req)
   }
 
-  private def getStream(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getStream(req: Request[IO]): IO[Response[IO]] =
     authed(req) { s =>
       val events = feed.subscribe.collect {
         case FeedItem.Changed(u, id) if u == s.userId => sse("change", Json.obj("latest" -> id.asJson))
@@ -49,9 +45,7 @@ final class StreamRoutes(
         .map(_.putHeaders("Cache-Control" -> "no-cache", "X-Accel-Buffering" -> "no"))
     }
 
-  private def sse(
-    kind: String,
-    data: Json
-  ): ServerSentEvent = ServerSentEvent(data = Some(data.noSpaces), eventType = Some(kind))
+  private def sse(kind: String, data: Json): ServerSentEvent =
+    ServerSentEvent(data = Some(data.noSpaces), eventType = Some(kind))
 
 }

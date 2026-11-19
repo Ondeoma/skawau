@@ -29,17 +29,9 @@ class StoreSpec extends CatsEffectSuite {
 
   override def munitFixtures = if cfg.isDefined then List(xaFixture) else Nil
 
-  private final case class Env(
-    xa: doobie.Transactor[IO],
-    users: UserStore,
-    nodes: NodeStore,
-    shares: ShareStore)
+  private final case class Env(xa: doobie.Transactor[IO], users: UserStore, nodes: NodeStore, shares: ShareStore)
 
-  private def withDb(
-    name: String
-  )(
-    body: Env => IO[Unit]
-  ): Unit =
+  private def withDb(name: String)(body: Env => IO[Unit]): Unit =
     test(name) {
       if cfg.isEmpty then IO(assume(false, "TEST_DATABASE_URL が未設定"))
       else {
@@ -48,19 +40,11 @@ class StoreSpec extends CatsEffectSuite {
       }
     }
 
-  private def user(
-    e: Env,
-    name: String
-  ): IO[User] = e.users.upsert(s"test:${UUID.randomUUID()}", name, None, None)
-  private def actor(
-    u: User
-  ) = Actor(Some(u.id), "web")
-  private def blob(
-    size: Long = 10
-  ) = BlobInfo(s"files/${UUID.randomUUID()}", size, "text/plain", UUID.randomUUID().toString)
-  private def ok[A](
-    io: IO[Either[AppError, A]]
-  ): IO[A] = io.map(_.fold(e => fail(e.message), identity))
+  private def user(e: Env, name: String): IO[User] = e.users.upsert(s"test:${UUID.randomUUID()}", name, None, None)
+  private def actor(u: User) = Actor(Some(u.id), "web")
+  private def blob(size: Long = 10) =
+    BlobInfo(s"files/${UUID.randomUUID()}", size, "text/plain", UUID.randomUUID().toString)
+  private def ok[A](io: IO[Either[AppError, A]]): IO[A] = io.map(_.fold(e => fail(e.message), identity))
 
   withDb("フォルダ・ファイルの作成、同じ名前は大文字小文字を区別せず拒否") { e =>
     for {
@@ -251,12 +235,7 @@ class StoreSpec extends CatsEffectSuite {
       c <- ok(e.nodes.copy(a, dest, "元", actor(u), k => IO.pure(k + "-copy")))
       sub <- e.nodes.subtree(c)
       _ = assertEquals(sub.map(_._2), List("中", "中/x.txt"))
-      _ = assert(sub.forall(
-        (
-          n,
-          _
-        ) => n.ancestors.take(3) == List(root.id, dest.id, c.id)
-      ))
+      _ = assert(sub.forall((n, _) => n.ancestors.take(3) == List(root.id, dest.id, c.id)))
       _ = assert(sub.find(_._2 == "中/x.txt").flatMap(_._1.blobKey).exists(_.endsWith("-copy")))
     } yield ()
   }

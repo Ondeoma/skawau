@@ -9,11 +9,7 @@ import javax.crypto.spec.PBEKeySpec
 object Passwords {
   private val Iterations = 210000
 
-  private def derive(
-    password: String,
-    salt: Array[Byte],
-    iterations: Int
-  ): Array[Byte] =
+  private def derive(password: String, salt: Array[Byte], iterations: Int): Array[Byte] =
     SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(new PBEKeySpec(
       password.toCharArray,
       salt,
@@ -21,9 +17,7 @@ object Passwords {
       256
     )).getEncoded
 
-  def hash(
-    password: String
-  ): String = {
+  def hash(password: String): String = {
     val salt = new Array[Byte](16)
     new SecureRandom().nextBytes(salt)
     val enc = Base64.getEncoder
@@ -35,10 +29,7 @@ object Passwords {
     ).mkString(":")
   }
 
-  def verify(
-    password: String,
-    stored: String
-  ): Boolean =
+  def verify(password: String, stored: String): Boolean =
     stored.split(':') match {
       case Array("pbkdf2", it, salt, value) =>
         scala.util.Try {

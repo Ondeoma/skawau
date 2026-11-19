@@ -26,10 +26,7 @@ import java.util.UUID
  *
  * 文書キー（document.key）は「ノードID_版」。保存のたびに版が進むので、次に開くと新しい文書として扱われる。
  */
-final class OfficeService(
-  files: FileService,
-  http: Client[IO],
-  cfg: ApiConfig) {
+final class OfficeService(files: FileService, http: Client[IO], cfg: ApiConfig) {
 
   def enabled: Boolean = cfg.office.isDefined
 
@@ -38,28 +35,22 @@ final class OfficeService(
       OfficeInfoDto(o.url, FileKind.officeEdit.keys.toList.sorted, FileKind.officeView.keys.toList.sorted)
     )
 
-  private def appUrl(
-    o: OfficeConfig
-  ) = o.appUrl.stripSuffix("/")
+  private def appUrl(o: OfficeConfig) = o.appUrl.stripSuffix("/")
 
   /** URL に付ける署名（このサーバーの APP_SECRET で署名する。Document Server の秘密とは別）。 */
-  private def urlToken(
-    fields: (String, Json)*
-  ): String = Jwt.sign(Json.obj(fields*), cfg.appSecret)
+  private def urlToken(fields: (String, Json)*): String = Jwt.sign(Json.obj(fields*), cfg.appSecret)
 
   /**
    * エディタの設定。user は (ID, 名前)。canEdit は編集を許すか（形式が編集できなければ閲覧になる）。
    * actor は保存したときに記録する人（公開リンクは None で、link にリンクの共有 ID）。
    * 保存の知らせの URL には、編集を許したか・誰の権限か・期限を入れ、保存するときに権限がまだあるかを確かめ直す。
    */
-  def config(
-    n: Node,
-    user: (String, String),
-    canEdit0: Boolean,
-    actor: Option[UUID],
-    back: Option[String],
-    link: Option[UUID] = None
-  ): Res[OfficeConfigDto] =
+  def config(n: Node,
+             user: (String, String),
+             canEdit0: Boolean,
+             actor: Option[UUID],
+             back: Option[String],
+             link: Option[UUID] = None): Res[OfficeConfigDto] =
     (cfg.office, FileKind.officeType(n.name)) match {
       case (None, _) => IO.pure(Left(AppError(ErrorCode.OfficeNotConfigured)))
       case (_, None) => IO.pure(Left(AppError(ErrorCode.OfficeFormatUnsupported)))
@@ -118,10 +109,7 @@ final class OfficeService(
   // ---------------------------------------------------------------- Document Server からの呼び出し
 
   /** URL の署名を確かめ、対象のノード ID と一致するか。 */
-  def checkUrl(
-    t: Option[String],
-    id: UUID
-  ): Either[String, Json] =
+  def checkUrl(t: Option[String], id: UUID): Either[String, Json] =
     t.toRight("t がありません").flatMap(Jwt.verify(_, cfg.appSecret)).flatMap(j =>
       Either.cond(j.hcursor.get[UUID]("fid").contains(id), j, "対象が一致しません")
     )
@@ -130,10 +118,7 @@ final class OfficeService(
    * 知らせの本文（Document Server の JWT を確かめる）。本文の `token`、または Authorization ヘッダー
    * （ペイロードの `payload` に本文）のどちらでも受け付ける。
    */
-  def callbackBody(
-    req: Request[IO],
-    raw: Json
-  ): Either[String, Json] =
+  def callbackBody(req: Request[IO], raw: Json): Either[String, Json] =
     cfg.office.toRight("ONLYOFFICE が設定されていません").flatMap { o =>
       raw.hcursor.get[String]("token").toOption match {
         case Some(t) => Jwt.verify(t, o.secret)
@@ -146,21 +131,15 @@ final class OfficeService(
     }
 
   /** Document Server の公開の URL を、このサーバーから取りに行ける URL に置き換える。 */
-  private def internal(
-    url: String
-  ): String = cfg.office.fold(url) { o =>
+  private def internal(url: String): String = cfg.office.fold(url) { o =>
     val pub = o.url.stripSuffix("/")
     val int = o.internalUrl.stripSuffix("/")
     if pub != int && url.startsWith(pub) then int + url.drop(pub.length) else url
   }
 
   /** 取りに行ってよい URL か（Document Server のものだけ。ほかのホスト・内部のアドレスへの要求に使わせない）。 */
-  private def fromDocumentServer(
-    uri: Uri
-  ): Boolean = cfg.office.exists { o =>
-    def origin(
-      u: Uri
-    ) = {
+  private def fromDocumentServer(uri: Uri): Boolean = cfg.office.exists { o =>
+    def origin(u: Uri) = {
       val scheme = u.scheme.map(_.value.toString.toLowerCase)
       (scheme, u.host.map(_.value.toLowerCase), u.port.orElse(scheme.map(s => if s == "https" then 443 else 80)))
     }
@@ -168,11 +147,7 @@ final class OfficeService(
   }
 
   /** 編集した文書を取り込む（新しい版）。 */
-  def save(
-    n: Node,
-    url: String,
-    actor: Actor
-  ): Res[Node] =
+  def save(n: Node, url: String, actor: Actor): Res[Node] =
     Telemetry.span("office.save", "node.id" -> n.id.toString)(Uri.fromString(internal(url)).left.map(e =>
       AppError(ErrorCode.OfficeUrlInvalid, e.message)
     ).filterOrElse(fromDocumentServer, AppError(ErrorCode.OfficeUrlNotAllowed)) match {

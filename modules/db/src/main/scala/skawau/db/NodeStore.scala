@@ -15,26 +15,20 @@ import java.time.Instant
 import java.util.UUID
 
 /** S3 に置いた中身。 */
-final case class BlobInfo(
-  key: String,
-  size: Long,
-  contentType: String,
-  sha256: String)
+final case class BlobInfo(key: String, size: Long, contentType: String, sha256: String)
 
 /** 版の行（以前の版）。 */
-final case class VersionRow(
-  id: UUID,
-  nodeId: UUID,
-  version: Int,
-  size: Long,
-  contentType: Option[String],
-  blobKey: String,
-  createdAt: Instant,
-  createdBy: Option[UUID])
+final case class VersionRow(id: UUID,
+                            nodeId: UUID,
+                            version: Int,
+                            size: Long,
+                            contentType: Option[String],
+                            blobKey: String,
+                            createdAt: Instant,
+                            createdBy: Option[UUID])
 
 /** ファイル・フォルダ・版・ごみ箱・お気に入り。変更履歴（file_event）も同じトランザクションで書く。 */
-final class NodeStore(
-  xa: Transactor[IO]) extends TxStore(xa) {
+final class NodeStore(xa: Transactor[IO]) extends TxStore(xa) {
 
   private val colNames = List(
     "id",
@@ -68,15 +62,11 @@ final class NodeStore(
   import Visibility.toViewer
 
   /** 見ている人の権限（owner / edit / view / null）。 */
-  private def permFr(
-    v: Viewer
-  ): Fragment =
+  private def permFr(v: Viewer): Fragment =
     fr"case when n.owner_id = ${v.userId} then 'owner' else (select case when bool_or(s.permission = 'edit') then 'edit' when count(*) > 0 then 'view' end" ++
       fr"from share s where s.node_id = any(n.ancestors || n.id) and" ++ toViewer(v) ++ fr") end"
 
-  private def selectDto(
-    v: Viewer
-  ): Fragment =
+  private def selectDto(v: Viewer): Fragment =
     fr"select" ++ cols ++ fr"," ++ permFr(v) ++
       fr""", ou.id, ou.name, ou.avatar_url, mu.id, mu.name, mu.avatar_url,
           exists(select 1 from favorite f where f.user_id = ${v.userId} and f.node_id = n.id),
@@ -86,9 +76,7 @@ final class NodeStore(
 
   private type DtoRow = (Node, Option[String], UserBrief, Option[UserBrief], Boolean, Boolean, Boolean)
 
-  private def toDto(
-    r: DtoRow
-  ): (Node, NodeDto) = {
+  private def toDto(r: DtoRow): (Node, NodeDto) = {
     val (n, perm, owner, mod, fav, shared, link) = r
     n -> NodeDto(
       n.id,
@@ -110,81 +98,47 @@ final class NodeStore(
     )
   }
 
-  private def dtos(
-    v: Viewer,
-    where: Fragment,
-    tail: Fragment = Fragment.empty
-  ): ConnectionIO[List[(Node, NodeDto)]] = (selectDto(v) ++ fr"where" ++ where ++ tail).query[DtoRow].map(
-    toDto
-  ).to[List]
+  private def dtos(v: Viewer, where: Fragment, tail: Fragment = Fragment.empty): ConnectionIO[List[(Node, NodeDto)]] =
+    (selectDto(v) ++ fr"where" ++ where ++ tail).query[DtoRow].map(toDto).to[List]
 
   private def newEtag(): String = UUID.randomUUID().toString.replace("-", "").take(16)
 
   // ---------------------------------------------------------------- 取得
 
   /** ユーザーのルートのフォルダ（なければ作る）。 */
-  def root(
-    userId: UUID
-  ): IO[Node] = tx(rootC(userId))
+  def root(userId: UUID): IO[Node] = tx(rootC(userId))
 
-  def rootC(
-    userId: UUID
-  ): ConnectionIO[Node] =
+  def rootC(userId: UUID): ConnectionIO[Node] =
     sql"""insert into node (id, owner_id, parent_id, name, is_dir, etag) values (${UUID.randomUUID()}, $userId, null, '', true, ${newEtag()})
           on conflict (owner_id) where parent_id is null do nothing""".update.run *>
       (fr"select" ++ cols ++ fr"from node n where n.owner_id = $userId and n.parent_id is null").query[Node].unique
 
   /** 生きている（ごみ箱にない）ノード。権限は見ない。 */
-  def find(
-    id: UUID
-  ): IO[Option[Node]] = tx(findC(id))
+  def find(id: UUID): IO[Option[Node]] = tx(findC(id))
 
-  def findC(
-    id: UUID
-  ): ConnectionIO[
+  def findC(id: UUID): ConnectionIO[
     Option[Node]
   ] = (fr"select" ++ cols ++ fr"from node n where n.id = $id and" ++ alive).query[Node].option
 
   /** ごみ箱にあるものも含めて取る。 */
-  def findAny(
-    id: UUID
-  ): IO[Option[Node]] = tx((fr"select" ++ cols ++ fr"from node n where n.id = $id").query[Node].option)
+  def findAny(id: UUID): IO[Option[Node]] =
+    tx((fr"select" ++ cols ++ fr"from node n where n.id = $id").query[Node].option)
 
   /** 見ている人の権限つきで取る（見えなければ None）。 */
-  def access(
-    v: Viewer,
-    id: UUID
-  ): IO[Option[(Node, Access)]] = tx(accessC(v, id))
+  def access(v: Viewer, id: UUID): IO[Option[(Node, Access)]] = tx(accessC(v, id))
 
-  def accessC(
-    v: Viewer,
-    id: UUID
-  ): ConnectionIO[Option[(Node, Access)]] =
+  def accessC(v: Viewer, id: UUID): ConnectionIO[Option[(Node, Access)]] =
     (fr"select" ++ cols ++ fr"," ++ permFr(v) ++ fr"from node n where n.id = $id and" ++ alive)
-      .query[(Node, Option[String])].option.map(_.flatMap(
-        (
-          n,
-          p
-        ) => p.flatMap(Access.parse).map(n -> _)
-      ))
+      .query[(Node, Option[String])].option.map(_.flatMap((n, p) => p.flatMap(Access.parse).map(n -> _)))
 
-  def dto(
-    v: Viewer,
-    id: UUID
-  ): IO[Option[NodeDto]] = tx(dtos(v, fr"n.id = $id")).map(_.headOption.map(_._2))
+  def dto(v: Viewer, id: UUID): IO[Option[NodeDto]] = tx(dtos(v, fr"n.id = $id")).map(_.headOption.map(_._2))
 
   /** まとめて取る（生きているものだけ）。 */
-  def dtosByIds(
-    v: Viewer,
-    ids: List[UUID]
-  ): IO[List[(Node, NodeDto)]] =
+  def dtosByIds(v: Viewer, ids: List[UUID]): IO[List[(Node, NodeDto)]] =
     if ids.isEmpty then IO.pure(Nil) else tx(dtos(v, fr"n.id = any(${ids.distinct.toArray}) and" ++ alive))
 
   /** ID からまとめて名前を引く（見られるものだけ。外部のサービスのリンクの表示用）。 */
-  def lookup(
-    v: Viewer,
-    ids: List[UUID]
-  ): IO[List[(UUID, String, Boolean, Option[String])]] =
+  def lookup(v: Viewer, ids: List[UUID]): IO[List[(UUID, String, Boolean, Option[String])]] =
     if ids.isEmpty then IO.pure(Nil)
     else
       tx(
@@ -194,10 +148,7 @@ final class NodeStore(
       )
 
   /** フォルダの中身（名前順。フォルダが先）。 */
-  def children(
-    v: Viewer,
-    folderId: UUID
-  ): IO[List[NodeDto]] =
+  def children(v: Viewer, folderId: UUID): IO[List[NodeDto]] =
     tx(dtos(
       v,
       fr"n.parent_id = $folderId and n.deleted_at is null",
@@ -205,56 +156,32 @@ final class NodeStore(
     )).map(_.map(_._2))
 
   /** 子の名前（同じ名前の確認用）。 */
-  def childNamed(
-    parentId: UUID,
-    name: String
-  ): IO[Option[Node]] = tx(childNamedC(parentId, name))
+  def childNamed(parentId: UUID, name: String): IO[Option[Node]] = tx(childNamedC(parentId, name))
 
-  private def childNamedC(
-    parentId: UUID,
-    name: String
-  ): ConnectionIO[Option[Node]] =
+  private def childNamedC(parentId: UUID, name: String): ConnectionIO[Option[Node]] =
     (fr"select" ++ cols ++
       fr"from node n where n.parent_id = $parentId and lower(n.name) = lower($name) and n.deleted_at is null").query[
       Node
     ].option
 
-  private def childNamesC(
-    parentId: UUID
-  ): ConnectionIO[Set[String]] =
+  private def childNamesC(parentId: UUID): ConnectionIO[Set[String]] =
     sql"select name from node where parent_id = $parentId and deleted_at is null".query[String].to[List].map(_.toSet)
 
   /** WebDAV のパスをたどる（大文字小文字は区別しない）。 */
-  def resolve(
-    rootId: UUID,
-    segments: List[String]
-  ): IO[Option[Node]] = tx(
-    findC(rootId).flatMap(start =>
-      segments.foldLeftM(start)(
-        (
-          cur,
-          seg
-        ) => cur.filter(_.isDir).flatTraverse(c => childNamedC(c.id, seg))
-      )
-    )
-  )
+  def resolve(rootId: UUID, segments: List[String]): IO[Option[Node]] = tx(findC(rootId).flatMap(start =>
+    segments.foldLeftM(start)((cur, seg) => cur.filter(_.isDir).flatTraverse(c => childNamedC(c.id, seg)))
+  ))
 
-  def childrenRaw(
-    folderId: UUID
-  ): IO[List[Node]] =
+  def childrenRaw(folderId: UUID): IO[List[Node]] =
     tx((fr"select" ++ cols ++
       fr"from node n where n.parent_id = $folderId and n.deleted_at is null order by lower(n.name)").query[
       Node
     ].to[List])
 
   /** 子孫（ごみ箱にあるものの下は除く）と、起点からの相対パス（ZIP・コピー用）。フォルダも含む。親が先に来る。 */
-  def subtree(
-    node: Node
-  ): IO[List[(Node, String)]] = tx(subtreeC(node))
+  def subtree(node: Node): IO[List[(Node, String)]] = tx(subtreeC(node))
 
-  private def subtreeC(
-    node: Node
-  ): ConnectionIO[List[(Node, String)]] =
+  private def subtreeC(node: Node): ConnectionIO[List[(Node, String)]] =
     (fr"select" ++ cols ++ fr"from node n where ${node.id} = any(n.ancestors) and" ++ alive ++
       fr"order by cardinality(n.ancestors), lower(n.name)")
       .query[Node].to[List].map { ns =>
@@ -271,22 +198,15 @@ final class NodeStore(
   // ---------------------------------------------------------------- パス
 
   /** 所有者から見たパス（"/a/b/name"。ルートは "/"）。 */
-  def pathC(
-    n: Node
-  ): ConnectionIO[String] =
+  def pathC(n: Node): ConnectionIO[String] =
     sql"""select coalesce(string_agg(name, '/' order by array_position(${n.ancestors.toArray}, id)), '') from node
           where id = any(${n.ancestors.toArray}) and parent_id is not null""".query[String].unique
       .map(p => if n.isRoot then "/" else ("/" + p + "/").replace("//", "/") + n.name)
 
-  def path(
-    n: Node
-  ): IO[String] = tx(pathC(n))
+  def path(n: Node): IO[String] = tx(pathC(n))
 
   /** 見ている人がたどれるパンくず（共有されたものなら共有の起点から）と、共有されたものか。 */
-  def crumbs(
-    v: Viewer,
-    nodes: List[Node]
-  ): IO[Map[UUID, (List[Crumb], Boolean)]] =
+  def crumbs(v: Viewer, nodes: List[Node]): IO[Map[UUID, (List[Crumb], Boolean)]] =
     if nodes.isEmpty then IO.pure(Map.empty)
     else
       tx {
@@ -307,16 +227,10 @@ final class NodeStore(
       }
 
   /** 一覧の項目に場所（親のパス）を付ける。 */
-  def withPaths(
-    v: Viewer,
-    items: List[(Node, NodeDto)]
-  ): IO[List[NodeHitDto]] =
+  def withPaths(v: Viewer, items: List[(Node, NodeDto)]): IO[List[NodeHitDto]] =
     crumbs(v, items.map(_._1)).map { m =>
       items.map {
-        (
-          n,
-          d
-        ) =>
+        (n, d) =>
           {
             val (cs, inShare) = m.getOrElse(n.id, (Nil, false))
             val parents = cs.dropRight(1).map(c => if c.name.isEmpty then "" else c.name)
@@ -329,25 +243,15 @@ final class NodeStore(
   // ---------------------------------------------------------------- 一覧
 
   /** 見られるもの（自分の・共有されたもの）の条件。 */
-  private def visible(
-    v: Viewer,
-    roots: Array[UUID]
-  ): Fragment =
+  private def visible(v: Viewer, roots: Array[UUID]): Fragment =
     fr"(n.owner_id = ${v.userId} or n.id = any($roots) or n.ancestors && $roots) and" ++ alive
 
   /** 最近更新したファイル。 */
-  def recent(
-    v: Viewer,
-    limit: Int
-  ): IO[List[(Node, NodeDto)]] = tx(
-    Visibility.sharedRoots(v).flatMap(roots =>
-      dtos(v, fr"not n.is_dir and" ++ visible(v, roots), fr"order by n.updated_at desc limit $limit")
-    )
-  )
+  def recent(v: Viewer, limit: Int): IO[List[(Node, NodeDto)]] = tx(Visibility.sharedRoots(v).flatMap(roots =>
+    dtos(v, fr"not n.is_dir and" ++ visible(v, roots), fr"order by n.updated_at desc limit $limit")
+  ))
 
-  def favorites(
-    v: Viewer
-  ): IO[List[(Node, NodeDto)]] = tx(
+  def favorites(v: Viewer): IO[List[(Node, NodeDto)]] = tx(
     Visibility.sharedRoots(v).flatMap(roots =>
       dtos(
         v,
@@ -358,11 +262,7 @@ final class NodeStore(
   )
 
   /** 名前の検索（日本語の部分一致・かなの揺れを吸収。PGroonga）。 */
-  def search(
-    v: Viewer,
-    q: String,
-    limit: Int
-  ): IO[List[(Node, NodeDto)]] = tx(
+  def search(v: Viewer, q: String, limit: Int): IO[List[(Node, NodeDto)]] = tx(
     Visibility.sharedRoots(v).flatMap { roots =>
       val words = q.trim.split("\\s+").toList.filter(_.nonEmpty).take(5)
       val cond =
@@ -377,9 +277,7 @@ final class NodeStore(
   )
 
   /** 共有されたもの（起点ごと。自分のものは除く）。 */
-  def sharedWithMe(
-    v: Viewer
-  ): IO[List[(Node, NodeDto)]] = tx(
+  def sharedWithMe(v: Viewer): IO[List[(Node, NodeDto)]] = tx(
     Visibility.sharedRoots(v).flatMap(roots =>
       dtos(
         v,
@@ -392,13 +290,9 @@ final class NodeStore(
   // ---------------------------------------------------------------- 容量
 
   /** 使用量（ファイルの大きさの合計。ごみ箱と以前の版を含む）。 */
-  def usage(
-    ownerId: UUID
-  ): IO[Long] = tx(usageC(ownerId))
+  def usage(ownerId: UUID): IO[Long] = tx(usageC(ownerId))
 
-  private def usageC(
-    ownerId: UUID
-  ): ConnectionIO[Long] =
+  private def usageC(ownerId: UUID): ConnectionIO[Long] =
     sql"""select (select coalesce(sum(size), 0) from node where owner_id = $ownerId and not is_dir)
                + (select coalesce(sum(v.size), 0) from file_version v join node n on n.id = v.node_id where n.owner_id = $ownerId)""".query[
       Long
@@ -416,46 +310,34 @@ final class NodeStore(
 
   // ---------------------------------------------------------------- 作成・更新
 
-  private def insertC(
-    owner: UUID,
-    parent: Node,
-    name: String,
-    isDir: Boolean,
-    blob: Option[BlobInfo],
-    actor: Actor
-  ): ConnectionIO[Node] =
+  private def insertC(owner: UUID,
+                      parent: Node,
+                      name: String,
+                      isDir: Boolean,
+                      blob: Option[BlobInfo],
+                      actor: Actor): ConnectionIO[Node] =
     (fr"insert into node (id, owner_id, parent_id, ancestors, name, is_dir, size, content_type, blob_key, sha256, etag, modified_by) values (" ++
       fr"${UUID.randomUUID()}, $owner, ${parent.id}, ${parent.lineage.toArray}, $name, $isDir, ${blob.fold(0L)(_.size)}, ${blob.map(_.contentType)}," ++
       fr"${blob.map(_.key)}, ${blob.map(_.sha256)}, ${newEtag()}, ${actor.userId})" ++ returning)
       .query[Node].unique
 
-  private def touchParent(
-    parentId: UUID
-  ): ConnectionIO[Unit] =
+  private def touchParent(parentId: UUID): ConnectionIO[Unit] =
     sql"update node set etag = ${newEtag()}, updated_at = now() where id = $parentId".update.run.void
 
-  private def unique(
-    e: Throwable
-  ): Boolean = e match {
+  private def unique(e: Throwable): Boolean = e match {
     case s: java.sql.SQLException => s.getSQLState == "23505"
     case _ => false
   }
 
   /** 一意制約の違反（同じ名前）を Conflict にする。 */
-  private def guarded[A](
-    c: IO[A]
-  ): IO[Either[AppError, A]] =
+  private def guarded[A](c: IO[A]): IO[Either[AppError, A]] =
     c.attempt.flatMap {
       case Right(a) => IO.pure(Right(a))
       case Left(e) if unique(e) => IO.pure(Left(AppError(ErrorCode.NodeNameTaken)))
       case Left(e) => IO.raiseError(e)
     }
 
-  def createFolder(
-    parent: Node,
-    name: String,
-    actor: Actor
-  ): IO[Either[AppError, Node]] = guarded(tx(
+  def createFolder(parent: Node, name: String, actor: Actor): IO[Either[AppError, Node]] = guarded(tx(
     for {
       n <- insertC(parent.ownerId, parent, name, isDir = true, None, actor)
       _ <- touchParent(parent.id)
@@ -465,11 +347,7 @@ final class NodeStore(
   ))
 
   /** パスの途中のフォルダを作りながらたどる（フォルダごとのアップロード用）。 */
-  def ensureFolders(
-    parent: Node,
-    segments: List[String],
-    actor: Actor
-  ): IO[Either[AppError, Node]] =
+  def ensureFolders(parent: Node, segments: List[String], actor: Actor): IO[Either[AppError, Node]] =
     segments.foldLeftM[IO, Either[AppError, Node]](Right(parent)) {
       case (Left(e), _) => IO.pure(Left(e))
       case (Right(cur), seg) =>
@@ -487,13 +365,11 @@ final class NodeStore(
         }
     }
 
-  def createFile(
-    parent: Node,
-    name: String,
-    blob: BlobInfo,
-    actor: Actor,
-    kind: String = EventKind.Uploaded
-  ): IO[Either[AppError, Node]] = guarded(tx(
+  def createFile(parent: Node,
+                 name: String,
+                 blob: BlobInfo,
+                 actor: Actor,
+                 kind: String = EventKind.Uploaded): IO[Either[AppError, Node]] = guarded(tx(
     for {
       n <- insertC(parent.ownerId, parent, name, isDir = false, Some(blob), actor)
       _ <- touchParent(parent.id)
@@ -506,14 +382,12 @@ final class NodeStore(
    * 中身を置き換える（今の版を以前の版に回し、版を1つ進める）。keep を超えた古い版は消す（S3 の中身は blob_trash へ）。
    * expectedVersion を渡すと、その版でなければ Conflict（同時の上書きを防ぐ）。
    */
-  def replaceContent(
-    node: Node,
-    blob: BlobInfo,
-    actor: Actor,
-    keep: Int,
-    kind: String = EventKind.Updated,
-    expectedVersion: Option[Int] = None
-  ): IO[Either[AppError, Node]] = tx(
+  def replaceContent(node: Node,
+                     blob: BlobInfo,
+                     actor: Actor,
+                     keep: Int,
+                     kind: String = EventKind.Updated,
+                     expectedVersion: Option[Int] = None): IO[Either[AppError, Node]] = tx(
     (fr"select" ++ cols ++ fr"from node n where n.id = ${node.id} and not n.is_dir for update").query[
       Node
     ].option.flatMap {
@@ -540,10 +414,7 @@ final class NodeStore(
     }
   )
 
-  private def pruneVersionsC(
-    nodeId: UUID,
-    keep: Int
-  ): ConnectionIO[Unit] =
+  private def pruneVersionsC(nodeId: UUID, keep: Int): ConnectionIO[Unit] =
     sql"""with old as (delete from file_version where node_id = $nodeId and id not in
             (select id from file_version where node_id = $nodeId order by version desc limit ${math.max(
         keep,
@@ -552,11 +423,7 @@ final class NodeStore(
           insert into blob_trash (key) select blob_key from old on conflict do nothing""".update.run.void
 
   /** 名前の変更。 */
-  def rename(
-    node: Node,
-    name: String,
-    actor: Actor
-  ): IO[Either[AppError, Node]] = guarded(tx(
+  def rename(node: Node, name: String, actor: Actor): IO[Either[AppError, Node]] = guarded(tx(
     for {
       old <- pathC(node)
       n <-
@@ -576,17 +443,11 @@ final class NodeStore(
   ))
 
   /** 名前から決めた Content-Type（名前を変えたら直す）。 */
-  private def contentTypeOf(
-    node: Node,
-    name: String
-  ): Option[String] = if node.isDir then None else Some(FileKind.contentType(name))
+  private def contentTypeOf(node: Node, name: String): Option[String] =
+    if node.isDir then None else Some(FileKind.contentType(name))
 
   /** 親を付け替える（自分と子孫の ancestors を1つの UPDATE ずつで直す）。 */
-  private def reparentC(
-    node: Node,
-    dest: Node,
-    name: String
-  ): ConnectionIO[Unit] =
+  private def reparentC(node: Node, dest: Node, name: String): ConnectionIO[Unit] =
     sql"""update node set parent_id = ${dest.id}, ancestors = ${dest.lineage.toArray}, name = $name, content_type = ${contentTypeOf(
         node,
         name
@@ -597,29 +458,17 @@ final class NodeStore(
             where ${node.id} = any(ancestors)""".update.run.void
 
   /** S3 の中身を後で消すよう積む。 */
-  private def queueBlobsC(
-    keys: List[String]
-  ): ConnectionIO[Unit] =
+  private def queueBlobsC(keys: List[String]): ConnectionIO[Unit] =
     keys.traverse_(k => sql"insert into blob_trash (key) values ($k) on conflict do nothing".update.run)
 
   /** 移動（子孫の ancestors も付け替える。所有者の違うフォルダへ移すと、子孫ごと所有者を移す）。 */
-  def move(
-    node: Node,
-    target0: Node,
-    name: String,
-    actor: Actor
-  ): IO[Either[AppError, Node]] =
+  def move(node: Node, target0: Node, name: String, actor: Actor): IO[Either[AppError, Node]] =
     find(target0.id).flatMap {
       case None => IO.pure(Left(AppError(ErrorCode.MoveTargetNotFound)))
       case Some(target) => moveTo(node, target, name, actor)
     }
 
-  private def moveTo(
-    node: Node,
-    target: Node,
-    name: String,
-    actor: Actor
-  ): IO[Either[AppError, Node]] =
+  private def moveTo(node: Node, target: Node, name: String, actor: Actor): IO[Either[AppError, Node]] =
     if target.lineage.contains(node.id) then IO.pure(Left(AppError(ErrorCode.MoveIntoSelf)))
     else
       guarded(tx(
@@ -644,9 +493,7 @@ final class NodeStore(
    * 所有者が変わる移動の前に、中のごみ箱にあるものを元の所有者のルートの下へ外す
    * （ごみ箱の中身・その版が、移った先の所有者に渡らないように。ごみ箱の一覧の「元の場所」はそのまま）。
    */
-  private def detachTrashedC(
-    node: Node
-  ): ConnectionIO[Unit] =
+  private def detachTrashedC(node: Node): ConnectionIO[Unit] =
     for {
       root <- rootC(node.ownerId)
       ts <-
@@ -661,47 +508,30 @@ final class NodeStore(
    * コピー（フォルダは中身ごと）。S3 の中身の複製は呼び出し側で行い、copyBlob で新しいキーを受け取る。
    * 失敗したときは作った S3 の中身を blob_trash に積む。
    */
-  def copy(
-    node: Node,
-    target0: Node,
-    name: String,
-    actor: Actor,
-    copyBlob: String => IO[String]
-  ): IO[Either[AppError, Node]] =
+  def copy(node: Node,
+           target0: Node,
+           name: String,
+           actor: Actor,
+           copyBlob: String => IO[String]): IO[Either[AppError, Node]] =
     find(target0.id).flatMap {
       case None => IO.pure(Left(AppError(ErrorCode.CopyTargetNotFound)))
       case Some(target) if target.lineage.contains(node.id) => IO.pure(Left(AppError(ErrorCode.CopyIntoSelf)))
       case Some(target) => copyTo(node, target, name, actor, copyBlob)
     }
 
-  private def copyTo(
-    node: Node,
-    target: Node,
-    name: String,
-    actor: Actor,
-    copyBlob: String => IO[String]
-  ): IO[Either[AppError, Node]] =
+  private def copyTo(node: Node,
+                     target: Node,
+                     name: String,
+                     actor: Actor,
+                     copyBlob: String => IO[String]): IO[Either[AppError, Node]] =
     subtree(node).flatMap { desc =>
       val all = (node, "") :: desc
-      all.traverse(
-        (
-          n,
-          _
-        ) => n.blobKey.traverse(copyBlob).map(n.id -> _)
-      ).flatMap { keys =>
+      all.traverse((n, _) => n.blobKey.traverse(copyBlob).map(n.id -> _)).flatMap { keys =>
         val newKeys = keys.toMap
-        val ids = all.map(
-          (
-            n,
-            _
-          ) => n.id -> UUID.randomUUID()
-        ).toMap
+        val ids = all.map((n, _) => n.id -> UUID.randomUUID()).toMap
         val created = newKeys.values.flatten.toList
         val ins = all.traverse {
-          (
-            n,
-            _
-          ) =>
+          (n, _) =>
             {
               val parentLine: List[UUID] =
                 if n.id == node.id then target.lineage
@@ -732,17 +562,11 @@ final class NodeStore(
     }
 
   /** 表示用の一意な名前（同じ名前があれば「名前 (2)」）。 */
-  def uniqueName(
-    parentId: UUID,
-    name: String
-  ): IO[String] = tx(childNamesC(parentId)).map(Names.unique(name, _))
+  def uniqueName(parentId: UUID, name: String): IO[String] = tx(childNamesC(parentId)).map(Names.unique(name, _))
 
   // ---------------------------------------------------------------- ごみ箱
 
-  def trash(
-    node: Node,
-    actor: Actor
-  ): IO[Either[AppError, Unit]] =
+  def trash(node: Node, actor: Actor): IO[Either[AppError, Unit]] =
     if node.isRoot then IO.pure(Left(AppError(ErrorCode.RootNotDeletable)))
     else
       tx(
@@ -755,51 +579,34 @@ final class NodeStore(
         } yield Right(())
       ).flatTap(_ => sbirds.observe.Metrics.count("skawau.trash.moved", "via" -> actor.via))
 
-  def trashList(
-    ownerId: UUID
-  ): IO[List[TrashItemDto]] = tx(
+  def trashList(ownerId: UUID): IO[List[TrashItemDto]] = tx(
     sql"""select n.id, n.name, n.is_dir,
                  case when n.is_dir then coalesce((select sum(c.size) from node c where n.id = any(c.ancestors) and not c.is_dir), 0) else n.size end::bigint,
                  n.deleted_at, coalesce(n.trash_path, '/' || n.name), u.id, u.name, u.avatar_url
           from node n left join app_user u on u.id = n.deleted_by
           where n.owner_id = $ownerId and n.deleted_at is not null order by n.deleted_at desc"""
       .query[(UUID, String, Boolean, Long, Instant, String, Option[UserBrief])]
-      .map(
-        (
+      .map((id, n, d, s, at, p, by) =>
+        TrashItemDto(
           id,
           n,
           d,
           s,
           at,
-          p,
+          p.substring(0, math.max(p.lastIndexOf('/'), 0)) match { case "" => "/"; case x => x },
           by
-        ) =>
-          TrashItemDto(
-            id,
-            n,
-            d,
-            s,
-            at,
-            p.substring(0, math.max(p.lastIndexOf('/'), 0)) match { case "" => "/"; case x => x },
-            by
-          )
+        )
       )
       .to[List]
   )
 
   /** ごみ箱にある起点のノード（所有者のもの）。 */
-  def trashed(
-    ownerId: UUID,
-    id: UUID
-  ): IO[Option[Node]] =
+  def trashed(ownerId: UUID, id: UUID): IO[Option[Node]] =
     tx((fr"select" ++ cols ++
       fr"from node n where n.id = $id and n.owner_id = $ownerId and n.deleted_at is not null").query[Node].option)
 
   /** 元の場所へ戻す（元のフォルダがなければルートへ。同じ名前があれば「名前 (2)」）。 */
-  def restore(
-    node: Node,
-    actor: Actor
-  ): IO[Node] = tx(
+  def restore(node: Node, actor: Actor): IO[Node] = tx(
     for {
       parent <- node.parentId.flatTraverse(findC)
       dest <- parent.fold(rootC(node.ownerId))(_.pure[ConnectionIO])
@@ -816,10 +623,7 @@ final class NodeStore(
   ).flatTap(_ => sbirds.observe.Metrics.count("skawau.trash.restored", "via" -> actor.via))
 
   /** 完全に削除する（子孫・版・共有ごと。S3 の中身は blob_trash に積んで後で消す）。期限切れの自動の削除は via が system。 */
-  def purge(
-    node: Node,
-    actor: Actor
-  ): IO[Unit] = tx(
+  def purge(node: Node, actor: Actor): IO[Unit] = tx(
     for {
       _ <- sql"""insert into blob_trash (key)
                  select blob_key from node where (id = ${node.id} or ${node.id} = any(ancestors)) and blob_key is not null
@@ -832,10 +636,7 @@ final class NodeStore(
   ).flatTap(_ => sbirds.observe.Metrics.count("skawau.trash.purged", "via" -> actor.via))
 
   /** 期限を過ぎたごみ箱の起点（自動で完全に削除する）。 */
-  def expiredTrash(
-    days: Int,
-    limit: Int
-  ): IO[List[Node]] =
+  def expiredTrash(days: Int, limit: Int): IO[List[Node]] =
     tx((fr"select" ++ cols ++
       fr"from node n where n.deleted_at < now() - make_interval(days => $days) order by n.deleted_at limit $limit").query[
       Node
@@ -843,83 +644,53 @@ final class NodeStore(
 
   // ---------------------------------------------------------------- 版
 
-  def versions(
-    nodeId: UUID
-  ): IO[List[(VersionRow, Option[UserBrief])]] = tx(
+  def versions(nodeId: UUID): IO[List[(VersionRow, Option[UserBrief])]] = tx(
     sql"""select v.id, v.node_id, v.version, v.size, v.content_type, v.blob_key, v.created_at, v.created_by, u.id, u.name, u.avatar_url
           from file_version v left join app_user u on u.id = v.created_by where v.node_id = $nodeId order by v.version desc"""
       .query[(VersionRow, Option[UserBrief])].to[List]
   )
 
-  def version(
-    nodeId: UUID,
-    id: UUID
-  ): IO[Option[VersionRow]] = tx(
-    sql"select id, node_id, version, size, content_type, blob_key, created_at, created_by from file_version where node_id = $nodeId and id = $id"
-      .query[VersionRow].option
-  )
+  def version(nodeId: UUID, id: UUID): IO[Option[VersionRow]] =
+    tx(sql"select id, node_id, version, size, content_type, blob_key, created_at, created_by from file_version where node_id = $nodeId and id = $id".query[
+      VersionRow
+    ].option)
 
-  def deleteVersion(
-    nodeId: UUID,
-    id: UUID
-  ): IO[Boolean] = tx(
+  def deleteVersion(nodeId: UUID, id: UUID): IO[Boolean] = tx(
     sql"""with d as (delete from file_version where node_id = $nodeId and id = $id returning blob_key)
           insert into blob_trash (key) select blob_key from d on conflict do nothing""".update.run.map(_ > 0)
   )
 
   /** 変更履歴だけを書く（共有など、ノード自体は変えない操作）。 */
-  def event(
-    n: Node,
-    actor: Actor,
-    kind: String,
-    detail: Json = Json.obj()
-  ): IO[Unit] = tx(pathC(n).flatMap(p => Events.insert(n, actor, kind, p, detail)))
+  def event(n: Node, actor: Actor, kind: String, detail: Json = Json.obj()): IO[Unit] =
+    tx(pathC(n).flatMap(p => Events.insert(n, actor, kind, p, detail)))
 
   // ---------------------------------------------------------------- お気に入り
 
-  def setFavorite(
-    userId: UUID,
-    nodeId: UUID,
-    on: Boolean
-  ): IO[Unit] = tx(
-    if on then
-      sql"insert into favorite (user_id, node_id) values ($userId, $nodeId) on conflict do nothing".update.run.void
-    else sql"delete from favorite where user_id = $userId and node_id = $nodeId".update.run.void
-  )
+  def setFavorite(userId: UUID, nodeId: UUID, on: Boolean): IO[Unit] = tx(if on then
+    sql"insert into favorite (user_id, node_id) values ($userId, $nodeId) on conflict do nothing".update.run.void
+  else sql"delete from favorite where user_id = $userId and node_id = $nodeId".update.run.void)
 
   // ---------------------------------------------------------------- S3 の後片付け
 
   /** blob_trash のキーを消す（SKIP LOCKED で複数ノードが取り合う）。 */
-  def drainBlobTrash(
-    delete: String => IO[Unit]
-  ): IO[Int] =
+  def drainBlobTrash(delete: String => IO[Unit]): IO[Int] =
     processEach(
       sql"select key from blob_trash where attempts < 20 order by queued_at limit 100 for update skip locked".query[
         String
       ].to[List]
     )(k => {
       delete(k).attempt
-    })(
-      (
-        k,
-        r
-      ) =>
-        r match {
-          case Right(_) => sql"delete from blob_trash where key = $k".update.run
-          case Left(_) => sql"update blob_trash set attempts = attempts + 1 where key = $k".update.run
-        }
+    })((k, r) =>
+      r match {
+        case Right(_) => sql"delete from blob_trash where key = $k".update.run
+        case Left(_) => sql"update blob_trash set attempts = attempts + 1 where key = $k".update.run
+      }
     )
 }
 
 /** 変更履歴の書き込み（同じトランザクションで呼ぶ）。 */
 object Events {
-  def insert(
-    n: Node,
-    actor: Actor,
-    kind: String,
-    path: String,
-    detail: Json = Json.obj()
-  ): ConnectionIO[Unit] =
+  def insert(n: Node, actor: Actor, kind: String, path: String, detail: Json = Json.obj()): ConnectionIO[Unit] =
     sql"""insert into file_event (node_id, owner_id, lineage, actor_id, via, kind, name, path, detail)
           values (${n.id}, ${n.ownerId}, ${n.lineage.toArray}, ${actor.userId}, ${actor.via}, $kind, ${n.name}, $path, $detail)""".update.run.void
 }

@@ -22,12 +22,11 @@ import java.time.Instant
  * 発行するトークンは、そのユーザーの API キー（「<クライアント名> 連携」。API キーの画面から失効できる）。スコープは求められたもの
  * （既定は read。write はそのクライアントに許したときだけ。skaka は録画を置くために write を求める）。
  */
-final class OAuthRoutes(
-  oauth: OAuthStore,
-  nodes: NodeStore,
-  activity: ActivityStore,
-  val sessions: SessionAuth,
-  cfg: ApiConfig)
+final class OAuthRoutes(oauth: OAuthStore,
+                        nodes: NodeStore,
+                        activity: ActivityStore,
+                        val sessions: SessionAuth,
+                        cfg: ApiConfig)
   extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
@@ -39,9 +38,7 @@ final class OAuthRoutes(
     case req @ POST -> Root / "api" / "users" / "lookup" => postUsersLookup(req)
   }
 
-  private def getOauthAuthorize(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getOauthAuthorize(req: Request[IO]): IO[Response[IO]] =
     validate(param(req, _)) match {
       case Left(r) => r
       case Right((c, _, _, _)) =>
@@ -93,9 +90,7 @@ final class OAuthRoutes(
         }
     }
 
-  private def postOauthAuthorize(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postOauthAuthorize(req: Request[IO]): IO[Response[IO]] =
     req.as[UrlForm].flatMap { u =>
       val p = (k: String) => u.getFirst(k).map(_.trim).filter(_.nonEmpty)
       validate(p) match {
@@ -121,9 +116,7 @@ final class OAuthRoutes(
       }
     }
 
-  private def postOauthToken(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postOauthToken(req: Request[IO]): IO[Response[IO]] =
     basicClient(req) match {
       case None => oauthError(Status.Unauthorized, "invalid_client", "クライアントの認証に失敗しました")
       case Some(c) =>
@@ -170,9 +163,7 @@ final class OAuthRoutes(
         }
     }
 
-  private def postOauthRevoke(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postOauthRevoke(req: Request[IO]): IO[Response[IO]] =
     basicClient(req) match {
       case None => oauthError(Status.Unauthorized, "invalid_client", "クライアントの認証に失敗しました")
       case Some(c) => form(req)(f =>
@@ -180,9 +171,7 @@ final class OAuthRoutes(
         )
     }
 
-  private def postFilesLookup(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postFilesLookup(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s =>
       body[Json](req) { j =>
         val ids = j.hcursor.get[List[String]]("ids").getOrElse(Nil).flatMap(skawau.core.uuidOpt).distinct
@@ -190,28 +179,20 @@ final class OAuthRoutes(
         else
           nodes.lookup(Viewer.of(s), ids).flatMap(rows =>
             // folder は skea、isDir・mimeType は skiwi の取り決め（同じ意味）
-            Ok(Json.obj("files" -> rows.map(
-              (
-                id,
-                name,
-                dir,
-                ct
-              ) =>
-                Json.obj(
-                  "id" -> id.asJson,
-                  "name" -> name.asJson,
-                  "folder" -> dir.asJson,
-                  "isDir" -> dir.asJson,
-                  "mimeType" -> ct.asJson
-                )
+            Ok(Json.obj("files" -> rows.map((id, name, dir, ct) =>
+              Json.obj(
+                "id" -> id.asJson,
+                "name" -> name.asJson,
+                "folder" -> dir.asJson,
+                "isDir" -> dir.asJson,
+                "mimeType" -> ct.asJson
+              )
             ).asJson))
           )
       }
     )
 
-  private def postUsersLookup(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postUsersLookup(req: Request[IO]): IO[Response[IO]] =
     authed(req)(_ =>
       body[Json](req) { j =>
         val emails = j.hcursor.get[List[String]]("emails").getOrElse(Nil).map(_.trim.toLowerCase).filter(_.contains(
@@ -220,12 +201,8 @@ final class OAuthRoutes(
         if emails.size > 100 then err(ErrorCode.LookupEmailsTooMany)
         else
           oauth.usersByEmail(emails).flatMap(rows =>
-            Ok(Json.obj("users" -> rows.map(
-              (
-                id,
-                name,
-                email
-              ) => Json.obj("id" -> id.asJson, "name" -> name.asJson, "email" -> email.asJson)
+            Ok(Json.obj("users" -> rows.map((id, name, email) =>
+              Json.obj("id" -> id.asJson, "name" -> name.asJson, "email" -> email.asJson)
             ).asJson))
           )
       }
@@ -234,26 +211,17 @@ final class OAuthRoutes(
   private val CodeTtlSeconds = 60L
   private val CsrfCookie = "skawau_oauth_csrf"
 
-  private def client(
-    id: String
-  ): Option[OAuthClient] = cfg.oauthClients.find(_.id == id)
+  private def client(id: String): Option[OAuthClient] = cfg.oauthClients.find(_.id == id)
 
-  private def enc(
-    s: String
-  ): String = java.net.URLEncoder.encode(s, "UTF-8")
+  private def enc(s: String): String = java.net.URLEncoder.encode(s, "UTF-8")
 
   private object Html {
-    def escape(
-      s: String
-    ): String =
+    def escape(s: String): String =
       s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;")
   }
 
   /** redirect_uri に結果を付けて戻す。 */
-  private def back(
-    uri: String,
-    params: (String, Option[String])*
-  ): IO[Response[IO]] = {
+  private def back(uri: String, params: (String, Option[String])*): IO[Response[IO]] = {
     val q = params.collect { case (k, Some(v)) => s"$k=${enc(v)}" }.mkString("&")
     IO.pure(Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(uri +
       (if uri.contains("?") then "&" else "?") + q))))
@@ -265,10 +233,7 @@ final class OAuthRoutes(
    * 許可の画面。CSP の form-action は付けない（フォームの送信後のリダイレクトの連鎖にも効くため、
    * 連携元が callback の後に別の origin へ戻すと止まる）。CSRF は Cookie と hidden の値の照合で防ぐ。
    */
-  private def page(
-    title: String,
-    body: String
-  ): IO[Response[IO]] = {
+  private def page(title: String, body: String): IO[Response[IO]] = {
     val html =
       s"""<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
          |<title>${Html.escape(title)} | skawau</title><style>
@@ -289,26 +254,21 @@ final class OAuthRoutes(
     ))
   }
 
-  private def errorPage(
-    msg: String
-  ): IO[Response[IO]] =
+  private def errorPage(msg: String): IO[Response[IO]] =
     page(
       "認可できません",
       s"<h1>認可できません</h1><p>${Html.escape(msg)}</p><p class=\"muted\">連携元のサービスの設定を確認してください。</p>"
     ).map(_.withStatus(Status.BadRequest))
 
   /** 求められたスコープ（空白区切り。省略すると read）。 */
-  private def scopes(
-    p: String => Option[String]
-  ): List[String] =
+  private def scopes(p: String => Option[String]): List[String] =
     p(
       "scope"
     ).map(_.split(' ').toList.map(_.trim).filter(_.nonEmpty).distinct).filter(_.nonEmpty).getOrElse(List(ApiScope.Read))
 
   /** 認可の要求の確認（client_id・redirect_uri が不正ならリダイレクトしない）。 */
-  private def validate(
-    p: String => Option[String]
-  ): Either[IO[Response[IO]], (OAuthClient, String, Option[String], String)] =
+  private def validate(p: String => Option[String])
+    : Either[IO[Response[IO]], (OAuthClient, String, Option[String], String)] =
     (p("client_id").flatMap(client), p("redirect_uri")) match {
       case (None, _) => Left(errorPage("登録されていないクライアントです（client_id）"))
       case (Some(c), r) if !r.contains(c.redirectUri) => Left(errorPage("戻り先（redirect_uri）が登録されたものと一致しません"))
@@ -332,41 +292,25 @@ final class OAuthRoutes(
 
   // ---------------------------------------------------------------- トークンの発行・失効（クライアント認証は Basic）
 
-  private def oauthError(
-    status: Status,
-    code: String,
-    desc: String
-  ): IO[Response[IO]] =
+  private def oauthError(status: Status, code: String, desc: String): IO[Response[IO]] =
     IO.pure(Response[IO](status).withEntity(Json.obj("error" -> code.asJson, "error_description" -> desc.asJson))
       .putHeaders("Cache-Control" -> "no-store", "Pragma" -> "no-cache").putHeaders(
         (if status == Status.Unauthorized then List[Header.ToRaw]("WWW-Authenticate" -> "Basic realm=\"skawau\"")
          else Nil)*
       ))
 
-  private def basicClient(
-    req: Request[IO]
-  ): Option[OAuthClient] =
+  private def basicClient(req: Request[IO]): Option[OAuthClient] =
     req.headers.get[Authorization].collect { case Authorization(BasicCredentials(id, secret)) => (id, secret) }
-      .flatMap(
-        (
-          id,
-          secret
-        ) => client(id).filter(c => Crypto.constantTimeEquals(c.secret, secret))
-      )
+      .flatMap((id, secret) => client(id).filter(c => Crypto.constantTimeEquals(c.secret, secret)))
 
-  private def form(
-    req: Request[IO]
-  )(
-    f: Map[String, String] => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def form(req: Request[IO])(f: Map[String, String] => IO[Response[IO]]): IO[Response[IO]] =
     req.as[UrlForm].attempt.flatMap {
       case Left(_) => oauthError(Status.BadRequest, "invalid_request", "application/x-www-form-urlencoded で送ってください")
       case Right(u) => f(u.values.view.mapValues(_.headOption.getOrElse("")).toMap)
     }
 
   /** 同意は画面のログイン（Cookie のセッション）だけで受け付ける。APIキーでの同意を許すと、連携元がスコープを無断で引き上げられる。 */
-  private def browserSession(
-    req: Request[IO]
-  ): IO[Option[AuthSession]] = sessions.fromRequest(req).map(_.filter(_.isSession))
+  private def browserSession(req: Request[IO]): IO[Option[AuthSession]] =
+    sessions.fromRequest(req).map(_.filter(_.isSession))
 
 }

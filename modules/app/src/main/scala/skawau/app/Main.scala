@@ -23,14 +23,13 @@ import skawau.storage.S3BlobStore
 
 import scala.concurrent.duration.*
 
-final case class AppConfig(
-  port: Int,
-  db: DbConfig,
-  oidc: Option[OidcConfig],
-  api: ApiConfig,
-  staticDir: Option[String],
-  s3: Option[S3Config],
-  nodeId: String)
+final case class AppConfig(port: Int,
+                           db: DbConfig,
+                           oidc: Option[OidcConfig],
+                           api: ApiConfig,
+                           staticDir: Option[String],
+                           s3: Option[S3Config],
+                           nodeId: String)
 
 object Main extends IOApp.Simple {
 
@@ -111,10 +110,7 @@ object Main extends IOApp.Simple {
     } yield ()
 
   /** DB（Patroni のプライマリ）が使えるまで待ってからマイグレーションする。複数ノード同時起動でも Flyway のロックで1回だけ適用される。 */
-  private def migrateWithRetry(
-    cfg: AppConfig,
-    attempt: Int = 1
-  ): IO[Int] =
+  private def migrateWithRetry(cfg: AppConfig, attempt: Int = 1): IO[Int] =
     Database.migrate(cfg.db).handleErrorWith { e =>
       if attempt >= 60 then IO.raiseError(e)
       else
@@ -123,10 +119,7 @@ object Main extends IOApp.Simple {
     }
 
   /** ロードバランサー用のヘルスチェック。DB（プライマリ）に書けない状態なら 503。 */
-  private def healthRoutes(
-    xa: doobie.Transactor[IO],
-    node: String
-  ): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  private def healthRoutes(xa: doobie.Transactor[IO], node: String): HttpRoutes[IO] = HttpRoutes.of[IO] {
     case GET -> Root / "healthz" =>
       sql"select not pg_is_in_recovery()".query[Boolean].unique.transact(xa).timeout(3.seconds).attempt.flatMap {
         case Right(true) => text(Status.Ok, s"ok $node")
@@ -136,23 +129,16 @@ object Main extends IOApp.Simple {
       }
   }
 
-  private def text(
-    status: Status,
-    body: String
-  ): IO[Response[IO]] =
+  private def text(status: Status, body: String): IO[Response[IO]] =
     IO.pure(Response[IO](status).withEntity(body)(using EntityEncoder.stringEncoder))
 
-  private def blobStore(
-    cfg: AppConfig
-  ): Resource[IO, Option[skawau.storage.BlobStore]] = cfg.s3 match {
+  private def blobStore(cfg: AppConfig): Resource[IO, Option[skawau.storage.BlobStore]] = cfg.s3 match {
     case Some(c) => S3BlobStore.resource(c).evalTap(_.ensureBucket).map(Some(_))
     case None =>
       Resource.eval(sbirds.observe.Log.println("[skawau] WARNING: S3_ENDPOINT が未設定のため、ファイルを保存できません").as(None))
   }
 
-  private def startupNotes(
-    cfg: AppConfig
-  ): IO[Unit] =
+  private def startupNotes(cfg: AppConfig): IO[Unit] =
     IO.whenA(
       cfg.oidc.isEmpty
     )(sbirds.observe.Log.println("[skawau] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください")) *>
@@ -161,12 +147,8 @@ object Main extends IOApp.Simple {
       )(sbirds.observe.Log.println("[skawau] ONLYOFFICE は未設定です（ONLYOFFICE_URL）。Office 文書はダウンロードだけできます"))
 
   /** DB から定期的に読むメトリクス（skorimako のダッシュボード・アラート用）。 */
-  private def gauges(
-    xa: doobie.Transactor[IO]
-  ): Resource[IO, Unit] = {
-    def q(
-      sqlText: doobie.Fragment
-    ): IO[Long] = sqlText.query[Long].unique.transact(xa)
+  private def gauges(xa: doobie.Transactor[IO]): Resource[IO, Unit] = {
+    def q(sqlText: doobie.Fragment): IO[Long] = sqlText.query[Long].unique.transact(xa)
     List(
       Metrics.gauge("skawau.users.total", "有効なユーザーの数")(q(sql"select count(*) from app_user where not disabled")),
       Metrics.gauge(
@@ -190,31 +172,20 @@ object Main extends IOApp.Simple {
   }
 
   /** 完全に削除したファイル・古い版の S3 の中身を消す（全ノードで動かし、SKIP LOCKED で取り合う）。 */
-  private def blobLoop(
-    nodes: NodeStore,
-    blobs: Option[skawau.storage.BlobStore]
-  ): IO[Unit] =
+  private def blobLoop(nodes: NodeStore, blobs: Option[skawau.storage.BlobStore]): IO[Unit] =
     blobs.fold(IO.unit)(b =>
       Periodic.run(30.seconds, 30.seconds, ErrorCode.BlobCleanupFailed)(nodes.drainBlobTrash(b.delete))
     )
 
   /** 期限（TRASH_DAYS）を過ぎたごみ箱の中身を完全に削除する。 */
-  private def trashLoop(
-    nodes: NodeStore,
-    lock: JobLock,
-    cfg: AppConfig
-  ): IO[Unit] =
+  private def trashLoop(nodes: NodeStore, lock: JobLock, cfg: AppConfig): IO[Unit] =
     Periodic.run(3.minutes, 1.hour, ErrorCode.TrashExpiryFailed)(lock.exclusive("trash-expiry", 50.minutes)(
       Telemetry.span("trash.expiry")(nodes.expiredTrash(cfg.api.trashDays, 500).flatMap(_.traverse_(n =>
         nodes.purge(n, Actor(None, "system"))
       )))
     ))
 
-  private def purgeLoop(
-    users: UserStore,
-    activity: ActivityStore,
-    lock: JobLock
-  ): IO[Unit] =
+  private def purgeLoop(users: UserStore, activity: ActivityStore, lock: JobLock): IO[Unit] =
     Periodic.run(10.minutes, 1.hour, ErrorCode.PurgeFailed)(lock.exclusive("purge", 50.minutes)(
       Telemetry.span("purge")(IO.realTimeInstant.flatMap(users.purgeExpired) *> activity.purgeOld(180).void)
     ))
@@ -223,30 +194,19 @@ object Main extends IOApp.Simple {
    * すべての応答に付けるセキュリティのヘッダー（個別に付けたものはそのまま）。
    * 画面を他のサイトの iframe に埋め込ませない（クリックジャッキング）。PDF のプレビューは同じオリジンの iframe なので SAMEORIGIN。
    */
-  private def securityHeaders(
-    routes: HttpRoutes[IO]
-  ): HttpRoutes[IO] = routes.map { r =>
-    def absent(
-      n: String
-    ) = r.headers.get(org.typelevel.ci.CIString(n)).isEmpty
+  private def securityHeaders(routes: HttpRoutes[IO]): HttpRoutes[IO] = routes.map { r =>
+    def absent(n: String) = r.headers.get(org.typelevel.ci.CIString(n)).isEmpty
     val hs = List(
       "X-Content-Type-Options" -> "nosniff",
       "X-Frame-Options" -> "SAMEORIGIN",
       "Referrer-Policy" -> "same-origin",
       "Content-Security-Policy" -> "frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
-    ).filter(
-      (
-        n,
-        _
-      ) => absent(n)
-    )
+    ).filter((n, _) => absent(n))
     r.putHeaders(hs.map(h => h: Header.ToRaw)*)
   }
 
   /** ビルド済みの画面の配信。存在しないパスは index.html（SPA）。 */
-  private def spa(
-    dir: String
-  ): HttpRoutes[IO] = {
+  private def spa(dir: String): HttpRoutes[IO] = {
     val files = fileService[IO](org.http4s.server.staticcontent.FileService.Config(dir))
     val index = HttpRoutes.of[IO] {
       case req @ GET -> _

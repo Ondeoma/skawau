@@ -16,17 +16,13 @@ object FileKind {
   val Other = "file"
 
   /** 小文字の拡張子（なければ空）. */
-  def ext(
-    name: String
-  ): String = {
+  def ext(name: String): String = {
     val i = name.lastIndexOf('.')
     if (i <= 0 || i == name.length - 1) "" else name.substring(i + 1).toLowerCase
   }
 
   /** 拡張子を除いた名前. */
-  def base(
-    name: String
-  ): String = {
+  def base(name: String): String = {
     val i = name.lastIndexOf('.')
     if (i <= 0) name else name.substring(0, i)
   }
@@ -119,18 +115,11 @@ object FileKind {
   )
 
   /** ONLYOFFICE の documentType（word / cell / slide）. 開けない形式は None. */
-  def officeType(
-    name: String
-  ): Option[String] = { val e = ext(name); officeEdit.get(e).orElse(officeView.get(e)) }
+  def officeType(name: String): Option[String] = { val e = ext(name); officeEdit.get(e).orElse(officeView.get(e)) }
 
-  def officeEditable(
-    name: String
-  ): Boolean = officeEdit.contains(ext(name))
+  def officeEditable(name: String): Boolean = officeEdit.contains(ext(name))
 
-  def kind(
-    name: String,
-    isDir: Boolean = false
-  ): String =
+  def kind(name: String, isDir: Boolean = false): String =
     if (isDir) Folder
     else {
       val e = ext(name)
@@ -144,9 +133,7 @@ object FileKind {
       else Other
     }
 
-  def icon(
-    kind: String
-  ): String = kind match {
+  def icon(kind: String): String = kind match {
     case Folder => "📁"
     case Image => "🖼️"
     case Video => "🎬"
@@ -161,15 +148,10 @@ object FileKind {
   }
 
   /** 画面の中で開けるか（画像・動画・音声・PDF・テキスト）. */
-  def previewable(
-    kind: String
-  ): Boolean = Set(Image, Video, Audio, Pdf, Text)(kind)
+  def previewable(kind: String): Boolean = Set(Image, Video, Audio, Pdf, Text)(kind)
 
   /** 画面で直接書き換えられるテキスト（大きすぎるものは除く）. */
-  def textEditable(
-    name: String,
-    size: Long
-  ): Boolean = kind(name) == Text && size <= 2L * 1024 * 1024
+  def textEditable(name: String, size: Long): Boolean = kind(name) == Text && size <= 2L * 1024 * 1024
 
   private val types: Map[String, String] = Map(
     "png" -> "image/png",
@@ -225,14 +207,10 @@ object FileKind {
   )
 
   /** 拡張子からの Content-Type（分からなければ application/octet-stream）. */
-  def contentType(
-    name: String
-  ): String = types.getOrElse(ext(name), "application/octet-stream")
+  def contentType(name: String): String = types.getOrElse(ext(name), "application/octet-stream")
 
   /** ブラウザでそのまま表示してよい形式（それ以外は保存させる. HTML・SVG はスクリプトを含み得るので表示させない）. */
-  def inlineSafe(
-    name: String
-  ): Boolean = {
+  def inlineSafe(name: String): Boolean = {
     val k = kind(name)
     val e = ext(name)
     (k == Image && e != "svg") || k == Video || k == Audio || k == Pdf ||
@@ -243,9 +221,7 @@ object FileKind {
 
 /** 表示の補助（バイト数など. 画面とサーバーで同じ表記にする）. */
 object Bytes {
-  def format(
-    n: Long
-  ): String =
+  def format(n: Long): String =
     if (n < 1024) s"$n B"
     else if (n < 1024L * 1024) f"${n / 1024.0}%.1f KB"
     else if (n < 1024L * 1024 * 1024) f"${n / 1024.0 / 1024.0}%.1f MB"

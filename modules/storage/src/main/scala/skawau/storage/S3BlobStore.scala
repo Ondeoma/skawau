@@ -15,24 +15,12 @@ import software.amazon.awssdk.services.s3.model.*
 import java.net.URI
 
 /** S3互換ストレージの実装。AWS SDKの同期クライアントを blocking プールで使う。読み書きはトレースのスパン（s3.put など）にする。 */
-final class S3BlobStore private (
-  client: S3Client,
-  bucket: String) extends BlobStore {
+final class S3BlobStore private (client: S3Client, bucket: String) extends BlobStore {
 
-  private def span[A](
-    op: String,
-    key: String,
-    kv: (String, String)*
-  )(
-    fa: IO[A]
-  ): IO[A] =
+  private def span[A](op: String, key: String, kv: (String, String)*)(fa: IO[A]): IO[A] =
     Telemetry.span(s"s3.$op", (List("aws.s3.bucket" -> bucket, "aws.s3.key" -> key) ++ kv)*)(fa)
 
-  def put(
-    key: String,
-    file: Path,
-    contentType: String
-  ): IO[Unit] =
+  def put(key: String, file: Path, contentType: String): IO[Unit] =
     span("put", key, "content_type" -> contentType)(IO.blocking {
       client.putObject(
         PutObjectRequest.builder().bucket(bucket).key(key).contentType(contentType).build(),
@@ -40,17 +28,9 @@ final class S3BlobStore private (
       )
     }.void)
 
-  def get(
-    key: String,
-    range: Option[(Long, Option[Long])] = None
-  ): IO[Option[(BlobMeta, Stream[IO, Byte])]] = {
+  def get(key: String, range: Option[(Long, Option[Long])] = None): IO[Option[(BlobMeta, Stream[IO, Byte])]] = {
     val req = GetObjectRequest.builder().bucket(bucket).key(key)
-    range.foreach(
-      (
-        from,
-        to
-      ) => req.range(s"bytes=$from-${to.fold("")(_.toString)}")
-    )
+    range.foreach((from, to) => req.range(s"bytes=$from-${to.fold("")(_.toString)}"))
     span("get", key)(IO.blocking(client.getObject(req.build()))
       .map { in =>
         val r = in.response()
@@ -71,18 +51,13 @@ final class S3BlobStore private (
       })
   }
 
-  def delete(
-    key: String
-  ): IO[Unit] =
+  def delete(key: String): IO[Unit] =
     span(
       "delete",
       key
     )(IO.blocking(client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build())).void)
 
-  def copy(
-    from: String,
-    to: String
-  ): IO[Boolean] =
+  def copy(from: String, to: String): IO[Boolean] =
     span("copy", to, "aws.s3.copy_source" -> from)(IO.blocking {
       client.copyObject(CopyObjectRequest.builder().sourceBucket(
         bucket
@@ -98,9 +73,7 @@ final class S3BlobStore private (
 }
 
 object S3BlobStore {
-  def resource(
-    cfg: S3Config
-  ): Resource[IO, S3BlobStore] =
+  def resource(cfg: S3Config): Resource[IO, S3BlobStore] =
     Resource
       .fromAutoCloseable(IO.blocking {
         S3Client

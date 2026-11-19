@@ -22,9 +22,7 @@ enum OnConflict {
 }
 
 object OnConflict {
-  def parse(
-    s: Option[String]
-  ): OnConflict = s.map(_.trim.toLowerCase) match {
+  def parse(s: Option[String]): OnConflict = s.map(_.trim.toLowerCase) match {
     case Some("rename") => Rename
     case Some("overwrite") => Overwrite
     case _ => Fail
@@ -36,11 +34,7 @@ object OnConflict {
  * 権限の規則: 中身の書き換えはそのノードの編集権限、作成はフォルダの編集権限、
  * 名前の変更・移動・削除は「親フォルダ」の編集権限（共有された起点そのものは受け取った人が消したり動かしたりできない）。
  */
-final class FileService(
-  nodes: NodeStore,
-  users: UserStore,
-  blobs: Option[BlobStore],
-  cfg: ApiConfig) {
+final class FileService(nodes: NodeStore, users: UserStore, blobs: Option[BlobStore], cfg: ApiConfig) {
 
   def storageReady: Boolean = blobs.isDefined
 
@@ -50,16 +44,10 @@ final class FileService(
 
   // ---------------------------------------------------------------- 権限
 
-  def viewer(
-    s: AuthSession
-  ): Viewer = Viewer.of(s)
+  def viewer(s: AuthSession): Viewer = Viewer.of(s)
 
   /** 見えなければ 404、権限が足りなければ 403。 */
-  def node(
-    v: Viewer,
-    id: UUID,
-    need: Access
-  ): Res[(Node, Access)] =
+  def node(v: Viewer, id: UUID, need: Access): Res[(Node, Access)] =
     nodes.access(v, id).map {
       case None => Left(AppError(ErrorCode.NodeNotFound))
       case Some((_, a)) if !(a >= need) =>
@@ -67,23 +55,11 @@ final class FileService(
       case Some(x) => Right(x)
     }
 
-  def folder(
-    v: Viewer,
-    id: UUID,
-    need: Access
-  ): Res[(Node, Access)] =
-    node(v, id, need).map(_.flatMap(
-      (
-        n,
-        a
-      ) => if n.isDir then Right((n, a)) else Left(AppError(ErrorCode.NotAFolder))
-    ))
+  def folder(v: Viewer, id: UUID, need: Access): Res[(Node, Access)] =
+    node(v, id, need).map(_.flatMap((n, a) => if n.isDir then Right((n, a)) else Left(AppError(ErrorCode.NotAFolder))))
 
   /** 名前の変更・移動・削除ができるか（親フォルダの編集権限）。 */
-  def canDetach(
-    v: Viewer,
-    n: Node
-  ): Res[Unit] =
+  def canDetach(v: Viewer, n: Node): Res[Unit] =
     n.parentId match {
       case None => IO.pure(Left(AppError(ErrorCode.RootNotOperable)))
       case Some(p) => nodes.access(v, p).map {
@@ -94,19 +70,12 @@ final class FileService(
 
   // ---------------------------------------------------------------- 容量
 
-  def quotaOf(
-    u: User
-  ): Option[Long] = u.quota.orElse(cfg.defaultQuota)
+  def quotaOf(u: User): Option[Long] = u.quota.orElse(cfg.defaultQuota)
 
-  def quota(
-    u: User
-  ): IO[QuotaDto] = nodes.usage(u.id).map(QuotaDto(_, quotaOf(u)))
+  def quota(u: User): IO[QuotaDto] = nodes.usage(u.id).map(QuotaDto(_, quotaOf(u)))
 
   /** 所有者の容量に add バイト足せるか。 */
-  def checkQuota(
-    ownerId: UUID,
-    add: Long
-  ): Res[Unit] =
+  def checkQuota(ownerId: UUID, add: Long): Res[Unit] =
     users.find(ownerId).flatMap {
       case None => IO.pure(Left(AppError(ErrorCode.OwnerNotFound)))
       case Some(u) =>
@@ -126,9 +95,7 @@ final class FileService(
 
   // ---------------------------------------------------------------- 中身の保存
 
-  private def sha256(
-    p: Path
-  ): IO[String] = IO.blocking {
+  private def sha256(p: Path): IO[String] = IO.blocking {
     val md = MessageDigest.getInstance("SHA-256")
     val in = java.nio.file.Files.newInputStream(p.toNioPath)
     try {
@@ -139,10 +106,7 @@ final class FileService(
   }
 
   /** 一時ファイルを S3 に置く。 */
-  def putFile(
-    tmp: Path,
-    name: String
-  ): Res[BlobInfo] =
+  def putFile(tmp: Path, name: String): Res[BlobInfo] =
     store.flatMap(_.traverse { b =>
       for {
         size <- Files[IO].size(tmp)
@@ -154,11 +118,7 @@ final class FileService(
     })
 
   /** 本文を一時ファイルに受け取る（上限を超えたら 413）。 */
-  def receive[A](
-    body: Stream[IO, Byte]
-  )(
-    f: Path => Res[A]
-  ): Res[A] =
+  def receive[A](body: Stream[IO, Byte])(f: Path => Res[A]): Res[A] =
     Files[IO].tempFile.use { tmp =>
       body.take(cfg.maxUploadBytes + 1).through(Files[IO].writeAll(tmp)).compile.drain *>
         Files[IO].size(tmp).flatMap { size =>
@@ -168,58 +128,34 @@ final class FileService(
         }
     }
 
-  def receiveBytes[A](
-    bytes: Array[Byte]
-  )(
-    f: Path => Res[A]
-  ): Res[A] = receive(Stream.emits(bytes.toSeq))(f)
+  def receiveBytes[A](bytes: Array[Byte])(f: Path => Res[A]): Res[A] = receive(Stream.emits(bytes.toSeq))(f)
 
-  private def trashBlob(
-    info: BlobInfo
-  ): IO[Unit] = blobs.traverse_(_.delete(info.key).handleError(_ => ()))
+  private def trashBlob(info: BlobInfo): IO[Unit] = blobs.traverse_(_.delete(info.key).handleError(_ => ()))
 
   // EitherT で失敗（AppError）を途中で抜ける。R は Res を EitherT にしたもの
   private type R[A] = EitherT[IO, AppError, A]
-  private def R[A](
-    r: Res[A]
-  ): R[A] = EitherT(r)
-  private def lift[A](
-    io: IO[A]
-  ): R[A] = EitherT.liftF(io)
-  private def failed[A](
-    f: AppError
-  ): R[A] = EitherT.leftT(f)
-  private def check(
-    cond: Boolean,
-    f: => AppError
-  ): R[Unit] = EitherT.cond[IO](cond, (), f)
-  private def validName(
-    name: String
-  ): R[Unit] =
+  private def R[A](r: Res[A]): R[A] = EitherT(r)
+  private def lift[A](io: IO[A]): R[A] = EitherT.liftF(io)
+  private def failed[A](f: AppError): R[A] = EitherT.leftT(f)
+  private def check(cond: Boolean, f: => AppError): R[Unit] = EitherT.cond[IO](cond, (), f)
+  private def validName(name: String): R[Unit] =
     Names.invalid(name).fold(EitherT.rightT[IO, AppError](()))(m => failed(AppError(ErrorCode.FileNameInvalid, m)))
 
   /** S3 に置いた中身を使う処理。失敗したら置いた中身を消す。 */
-  private def withBlob[A](
-    tmp: Path,
-    name: String
-  )(
-    f: BlobInfo => Res[A]
-  ): R[A] =
+  private def withBlob[A](tmp: Path, name: String)(f: BlobInfo => Res[A]): R[A] =
     R(putFile(tmp, name)).flatMap(info => R(f(info).flatTap(r => trashBlob(info).whenA(r.isLeft))))
 
   /**
    * フォルダにファイルを置く。同じ名前のファイルがあれば conflict に従う（Overwrite は新しい版にする）。
    * relPath を渡すと途中のフォルダを作る（フォルダごとのアップロード）。
    */
-  def upload(
-    actor: Actor,
-    v: Viewer,
-    folderId: UUID,
-    relPath: List[String],
-    name0: String,
-    tmp: Path,
-    conflict: OnConflict
-  ): Res[Node] = {
+  def upload(actor: Actor,
+             v: Viewer,
+             folderId: UUID,
+             relPath: List[String],
+             name0: String,
+             tmp: Path,
+             conflict: OnConflict): Res[Node] = {
     val name = Names.normalize(name0)
     Telemetry.span("file.upload", "via" -> actor.via)((for {
       _ <- (name :: relPath).traverse_(validName)
@@ -246,13 +182,11 @@ final class FileService(
   }
 
   /** 既存のファイルの中身を置き換える（新しい版）。権限は呼び出し側で確かめること。 */
-  def writeTo(
-    actor: Actor,
-    n: Node,
-    tmp: Path,
-    kind: String = EventKind.Updated,
-    expectedVersion: Option[Int] = None
-  ): Res[Node] =
+  def writeTo(actor: Actor,
+              n: Node,
+              tmp: Path,
+              kind: String = EventKind.Updated,
+              expectedVersion: Option[Int] = None): Res[Node] =
     Telemetry.span("file.write", "via" -> actor.via)((for {
       _ <- check(!n.isDir, AppError(ErrorCode.FolderNotWritable))
       size <- lift(Files[IO].size(tmp))
@@ -265,41 +199,22 @@ final class FileService(
     } yield r).value)
 
   /** 空のファイル（Office は最小の文書）を作る。 */
-  def createEmpty(
-    actor: Actor,
-    v: Viewer,
-    folderId: UUID,
-    name0: String
-  ): Res[Node] = {
+  def createEmpty(actor: Actor, v: Viewer, folderId: UUID, name0: String): Res[Node] = {
     val name = Names.normalize(name0)
     receiveBytes(OfficeTemplates.blank(FileKind.ext(name)))(tmp =>
       upload(actor, v, folderId, Nil, name, tmp, OnConflict.Fail)
     )
   }
 
-  def createFolder(
-    actor: Actor,
-    v: Viewer,
-    parentId: UUID,
-    name0: String
-  ): Res[Node] = {
+  def createFolder(actor: Actor, v: Viewer, parentId: UUID, name0: String): Res[Node] = {
     val name = Names.normalize(name0)
-    (validName(name) *> R(folder(v, parentId, Access.Edit)).flatMap(
-      (
-        p,
-        _
-      ) => R(nodes.createFolder(p, name, actor))
-    )).value
+    (validName(name) *>
+      R(folder(v, parentId, Access.Edit)).flatMap((p, _) => R(nodes.createFolder(p, name, actor)))).value
   }
 
   // ---------------------------------------------------------------- 名前の変更・移動・コピー・削除
 
-  def rename(
-    actor: Actor,
-    v: Viewer,
-    id: UUID,
-    name0: String
-  ): Res[Node] = {
+  def rename(actor: Actor, v: Viewer, id: UUID, name0: String): Res[Node] = {
     val name = Names.normalize(name0)
     (for {
       _ <- validName(name)
@@ -310,18 +225,15 @@ final class FileService(
   }
 
   /** 移動またはコピー。 */
-  def transfer(
-    actor: Actor,
-    v: Viewer,
-    id: UUID,
-    targetId: UUID,
-    copy: Boolean,
-    conflict: OnConflict,
-    newName: Option[String] = None
-  ): Res[Node] = {
-    def sizeOf(
-      n: Node
-    ): IO[Long] = if n.isDir then nodes.subtree(n).map(_.filterNot(_._1.isDir).map(_._1.size).sum) else IO.pure(n.size)
+  def transfer(actor: Actor,
+               v: Viewer,
+               id: UUID,
+               targetId: UUID,
+               copy: Boolean,
+               conflict: OnConflict,
+               newName: Option[String] = None): Res[Node] = {
+    def sizeOf(n: Node): IO[Long] =
+      if n.isDir then nodes.subtree(n).map(_.filterNot(_._1.isDir).map(_._1.size).sum) else IO.pure(n.size)
     (for {
       n <- R(node(v, id, Access.View)).map(_._1)
       target <- R(folder(v, targetId, Access.Edit)).map(_._1)
@@ -353,32 +265,21 @@ final class FileService(
     } yield r).value
   }
 
-  private def copyBlob(
-    b: BlobStore,
-    from: String
-  ): IO[String] = {
+  private def copyBlob(b: BlobStore, from: String): IO[String] = {
     val to = newKey()
     b.copy(from, to).flatMap(ok =>
       if ok then IO.pure(to) else IO.raiseError(new RuntimeException(s"中身が見つかりません: $from"))
     )
   }
 
-  def trash(
-    actor: Actor,
-    v: Viewer,
-    id: UUID
-  ): Res[Unit] =
+  def trash(actor: Actor, v: Viewer, id: UUID): Res[Unit] =
     (R(node(v, id, Access.View)).map(_._1).flatTap(n => R(canDetach(v, n))).flatMap(n =>
       R(nodes.trash(n, actor))
     )).value
 
   // ---------------------------------------------------------------- 版
 
-  def restoreVersion(
-    actor: Actor,
-    n: Node,
-    versionId: UUID
-  ): Res[Node] =
+  def restoreVersion(actor: Actor, n: Node, versionId: UUID): Res[Node] =
     (for {
       ver <- EitherT.fromOptionF(nodes.version(n.id, versionId), AppError(ErrorCode.VersionNotFound))
       b <- R(store)
@@ -392,23 +293,15 @@ final class FileService(
 
   // ---------------------------------------------------------------- 取り出し
 
-  def read(
-    key: String,
-    range: Option[(Long, Option[Long])]
-  ): IO[Option[(BlobMeta, Stream[IO, Byte])]] =
+  def read(key: String, range: Option[(Long, Option[Long])]): IO[Option[(BlobMeta, Stream[IO, Byte])]] =
     blobs.fold(IO.pure(None))(_.get(key, range))
 
   /** ZIP にまとめて返す（フォルダは中身ごと。entries は ZIP の中のパスとノード）。 */
-  def zip(
-    entries: List[(String, Node)]
-  ): Stream[IO, Byte] =
+  def zip(entries: List[(String, Node)]): Stream[IO, Byte] =
     fs2.io.readOutputStream[IO](64 * 1024) { os =>
       Resource.make(IO(new ZipOutputStream(os)))(z => IO.blocking(z.close())).use { z =>
         entries.traverse_ {
-          (
-            path,
-            n
-          ) =>
+          (path, n) =>
             IO.blocking {
               val safe = path.split('/').map(Names.zipSegment).mkString("/")
               val e = new ZipEntry(if n.isDir then safe + "/" else safe)
@@ -427,24 +320,15 @@ final class FileService(
     }
 
   /** 選んだノード（フォルダは中身ごと）の ZIP。 */
-  def zipOf(
-    items: List[Node]
-  ): IO[Stream[IO, Byte]] = zipEntries(items).map(zip)
+  def zipOf(items: List[Node]): IO[Stream[IO, Byte]] = zipEntries(items).map(zip)
 
   /** ZIP の中身（選んだノードと、フォルダならその中身）。同じ名前は「名前 (2)」にする。 */
-  private def zipEntries(
-    items: List[Node]
-  ): IO[List[(String, Node)]] =
+  private def zipEntries(items: List[Node]): IO[List[(String, Node)]] =
     items.foldLeftM((Set.empty[String], List.empty[(String, Node)])) {
       case ((taken, acc), n) => {
         val top = Names.unique(n.name, taken)
         (if n.isDir then
-           nodes.subtree(n).map(_.map(
-             (
-               c,
-               p
-             ) => s"$top/$p" -> c
-           ))
+           nodes.subtree(n).map(_.map((c, p) => s"$top/$p" -> c))
          else IO.pure(Nil))
           .map(sub => (taken + top, acc ++ ((top -> n) :: sub)))
       }

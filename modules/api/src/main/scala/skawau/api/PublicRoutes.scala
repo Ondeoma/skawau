@@ -20,14 +20,13 @@ import java.util.UUID
  * そのリンクのパスだけに効く Cookie（署名つき、24時間）を渡す。
  * 権限: view（閲覧・ダウンロード）/ edit（加えてアップロード・フォルダの作成・Office の編集）/ upload（アップロードだけ。中身は見せない）。
  */
-final class PublicRoutes(
-  files: FileService,
-  nodes: NodeStore,
-  shares: ShareStore,
-  office: OfficeService,
-  notifier: Notifier,
-  val sessions: SessionAuth,
-  cfg: ApiConfig) extends RouteSupport {
+final class PublicRoutes(files: FileService,
+                         nodes: NodeStore,
+                         shares: ShareStore,
+                         office: OfficeService,
+                         notifier: Notifier,
+                         val sessions: SessionAuth,
+                         cfg: ApiConfig) extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "api" / "public" / token => getPublic(req, token)
@@ -40,10 +39,7 @@ final class PublicRoutes(
     case req @ GET -> Root / "api" / "public" / token / "office" => getPublicOffice(req, token)
   }
 
-  private def getPublic(
-    req: Request[IO],
-    token: String
-  ): IO[Response[IO]] =
+  private def getPublic(req: Request[IO], token: String): IO[Response[IO]] =
     link(token).flatMap {
       case None => err(ErrorCode.LinkNotFoundOrExpired)
       case Some((sh, n)) =>
@@ -64,10 +60,7 @@ final class PublicRoutes(
         )
     }
 
-  private def postPublicAuth(
-    req: Request[IO],
-    token: String
-  ): IO[Response[IO]] =
+  private def postPublicAuth(req: Request[IO], token: String): IO[Response[IO]] =
     body[PasswordReq](req)(r =>
       link(token).flatMap {
         case None => err(ErrorCode.LinkNotFound)
@@ -100,16 +93,9 @@ final class PublicRoutes(
       }
     )
 
-  private def getPublicFolder(
-    req: Request[IO],
-    token: String
-  ): IO[Response[IO]] =
+  private def getPublicFolder(req: Request[IO], token: String): IO[Response[IO]] =
     withLink(req, token, param(req, "id").flatMap(uuidOpt)) {
-      (
-        sh,
-        root,
-        n
-      ) =>
+      (sh, root, n) =>
         if !n.isDir then err(ErrorCode.NotAFolder)
         else
           for {
@@ -121,16 +107,9 @@ final class PublicRoutes(
           } yield res
     }
 
-  private def getPublicContent(
-    req: Request[IO],
-    token: String
-  ): IO[Response[IO]] =
+  private def getPublicContent(req: Request[IO], token: String): IO[Response[IO]] =
     withLink(req, token, param(req, "id").flatMap(uuidOpt)) {
-      (
-        sh,
-        _,
-        n
-      ) =>
+      (sh, _, n) =>
         if !grant(sh).canRead then err(ErrorCode.LinkDownloadNotAllowed)
         else if n.isDir then Serve.zip(files, List(n), n.name, actor.via)
         else {
@@ -139,16 +118,9 @@ final class PublicRoutes(
         }
     }
 
-  private def getPublicZip(
-    req: Request[IO],
-    token: String
-  ): IO[Response[IO]] =
+  private def getPublicZip(req: Request[IO], token: String): IO[Response[IO]] =
     withLink(req, token, None) {
-      (
-        sh,
-        root,
-        _
-      ) =>
+      (sh, root, _) =>
         if !grant(sh).canRead then err(ErrorCode.LinkDownloadNotAllowed)
         else
           idsParam(req, "ids").traverse(nodes.find).map(_.flatten.filter(n =>
@@ -159,16 +131,9 @@ final class PublicRoutes(
           }
     }
 
-  private def putPublicUpload(
-    req: Request[IO],
-    token: String
-  ): IO[Response[IO]] =
+  private def putPublicUpload(req: Request[IO], token: String): IO[Response[IO]] =
     withLink(req, token, param(req, "dir").flatMap(uuidOpt)) {
-      (
-        sh,
-        _,
-        dir
-      ) =>
+      (sh, _, dir) =>
         (param(req, "name"), grant(sh).canUpload && dir.isDir) match {
           case (_, false) => err(ErrorCode.LinkUploadNotAllowed)
           case (None, _) => err(ErrorCode.NameParamRequired)
@@ -190,16 +155,9 @@ final class PublicRoutes(
         }
     }
 
-  private def postPublicFolders(
-    req: Request[IO],
-    token: String
-  ): IO[Response[IO]] =
+  private def postPublicFolders(req: Request[IO], token: String): IO[Response[IO]] =
     withLink(req, token, param(req, "dir").flatMap(uuidOpt)) {
-      (
-        sh,
-        _,
-        dir
-      ) =>
+      (sh, _, dir) =>
         if !grant(sh).canEdit then err(ErrorCode.LinkFolderCreateNotAllowed)
         else
           body[NameReq](req)(r =>
@@ -209,16 +167,9 @@ final class PublicRoutes(
           )
     }
 
-  private def getPublicOffice(
-    req: Request[IO],
-    token: String
-  ): IO[Response[IO]] =
+  private def getPublicOffice(req: Request[IO], token: String): IO[Response[IO]] =
     withLink(req, token, param(req, "id").flatMap(uuidOpt)) {
-      (
-        sh,
-        _,
-        n
-      ) =>
+      (sh, _, n) =>
         if !grant(sh).canRead then err(ErrorCode.LinkOpenNotAllowed)
         else
           okJson(office.config(
@@ -231,22 +182,13 @@ final class PublicRoutes(
           ))
     }
 
-  private def cookieName(
-    token: String
-  ) = "skawau_link_" + Crypto.hex(Crypto.sha256(token)).take(12)
-  private def cookiePath(
-    token: String
-  ) = s"/api/public/$token"
+  private def cookieName(token: String) = "skawau_link_" + Crypto.hex(Crypto.sha256(token)).take(12)
+  private def cookiePath(token: String) = s"/api/public/$token"
 
   /** Cookie に入れるパスワードの印（パスワードを変えたら、前のパスワードで得た Cookie は使えなくなる）。 */
-  private def passwordMark(
-    hash: String
-  ): String = Crypto.hex(Crypto.sha256(hash)).take(16)
+  private def passwordMark(hash: String): String = Crypto.hex(Crypto.sha256(hash)).take(16)
 
-  private def unlocked(
-    req: Request[IO],
-    sh: ShareRow
-  ): Boolean =
+  private def unlocked(req: Request[IO], sh: ShareRow): Boolean =
     sh.passwordHash.forall(h =>
       req.cookies.find(_.name == cookieName(sh.token.get)).exists(c =>
         Jwt.verify(c.content, cfg.appSecret).toOption.exists(j =>
@@ -262,29 +204,15 @@ final class PublicRoutes(
   private val failures = new java.util.concurrent.ConcurrentHashMap[UUID, (Int, Instant)]()
   private val hashing = new java.util.concurrent.Semaphore(4)
 
-  private def lockedOut(
-    id: UUID,
-    now: Instant
-  ): Boolean =
-    Option(failures.get(id)).exists(
-      (
-        n,
-        at
-      ) => n >= MaxFailures && at.plusSeconds(FailureWindow).isAfter(now)
-    )
+  private def lockedOut(id: UUID, now: Instant): Boolean =
+    Option(failures.get(id)).exists((n, at) => n >= MaxFailures && at.plusSeconds(FailureWindow).isAfter(now))
 
-  private def recordFailure(
-    id: UUID,
-    now: Instant
-  ): IO[Unit] = IO {
+  private def recordFailure(id: UUID, now: Instant): IO[Unit] = IO {
     if failures.size > 10000 then
       failures.entrySet.removeIf(e => e.getValue._2.plusSeconds(FailureWindow).isBefore(now))
     failures.compute(
       id,
-      (
-        _,
-        old
-      ) =>
+      (_, old) =>
         Option(old) match {
           case Some((n, at)) if at.plusSeconds(FailureWindow).isAfter(now) => (n + 1, at)
           case _ => (1, now)
@@ -294,10 +222,7 @@ final class PublicRoutes(
   }
 
   /** パスワードを確かめる（混み合っていて計算できなければ None）。 */
-  private def verifyPassword(
-    password: String,
-    hash: String
-  ): IO[Option[Boolean]] = IO.blocking {
+  private def verifyPassword(password: String, hash: String): IO[Option[Boolean]] = IO.blocking {
     if hashing.tryAcquire(5, java.util.concurrent.TimeUnit.SECONDS) then
       try Some(Passwords.verify(password, hash))
       finally hashing.release()
@@ -305,22 +230,16 @@ final class PublicRoutes(
   }
 
   /** 有効なリンクと起点のノード（期限切れ・ごみ箱は 404）。 */
-  private def link(
-    token: String
-  ): IO[Option[(ShareRow, Node)]] =
+  private def link(token: String): IO[Option[(ShareRow, Node)]] =
     shares.byToken(token).flatMap {
       case Some(sh) if !sh.expired(LocalDate.now()) => nodes.find(sh.nodeId).map(_.map(sh -> _))
       case _ => IO.pure(None)
     }
 
   /** パスワードを確かめたうえで、リンクの範囲にあるノード（id が None なら起点）。 */
-  private def withLink(
-    req: Request[IO],
-    token: String,
-    id: Option[UUID]
-  )(
-    f: (ShareRow, Node, Node) => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def withLink(req: Request[IO],
+                       token: String,
+                       id: Option[UUID])(f: (ShareRow, Node, Node) => IO[Response[IO]]): IO[Response[IO]] =
     link(token).flatMap {
       case None => err(ErrorCode.LinkNotFoundOrExpired)
       case Some((sh, _)) if !unlocked(req, sh) => err(ErrorCode.LinkPasswordRequired)
@@ -334,27 +253,17 @@ final class PublicRoutes(
         }
     }
 
-  private def grant(
-    sh: ShareRow
-  ) = LinkGrant(sh.id, sh.nodeId, sh.ownerId, sh.permission)
+  private def grant(sh: ShareRow) = LinkGrant(sh.id, sh.nodeId, sh.ownerId, sh.permission)
 
   /** リンクで見せる形にする（所有者の情報は名前だけ、権限はリンクの権限）。 */
-  private def asPublic(
-    sh: ShareRow
-  )(
-    d: NodeDto
-  ): NodeDto =
+  private def asPublic(sh: ShareRow)(d: NodeDto): NodeDto =
     d.copy(perm = sh.permission, favorite = false, shared = false, hasLink = false, modifiedBy = None)
 
-  private def ownerViewer(
-    sh: ShareRow
-  ) = Viewer(sh.ownerId, Nil)
+  private def ownerViewer(sh: ShareRow) = Viewer(sh.ownerId, Nil)
 
   /** リンクで見せるノードの応答。 */
-  private def publicDto(
-    sh: ShareRow,
-    n: Node
-  ): IO[Response[IO]] = nodes.dto(ownerViewer(sh), n.id).flatMap(d => Ok(asPublic(sh)(d.get)))
+  private def publicDto(sh: ShareRow, n: Node): IO[Response[IO]] =
+    nodes.dto(ownerViewer(sh), n.id).flatMap(d => Ok(asPublic(sh)(d.get)))
 
   private val actor = Actor(None, "link")
 

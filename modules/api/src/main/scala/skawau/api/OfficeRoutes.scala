@@ -13,12 +13,11 @@ import skawau.shared.*
 
 import java.util.UUID
 
-final class OfficeRoutes(
-  office: OfficeService,
-  files: FileService,
-  nodes: NodeStore,
-  shares: ShareStore,
-  val sessions: SessionAuth)
+final class OfficeRoutes(office: OfficeService,
+                         files: FileService,
+                         nodes: NodeStore,
+                         shares: ShareStore,
+                         val sessions: SessionAuth)
   extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
@@ -29,16 +28,10 @@ final class OfficeRoutes(
     case req @ POST -> Root / "onlyoffice" / "callback" / UuidVar(id) => postOnlyofficeCallback(req, id)
   }
 
-  private def getFileOffice(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def getFileOffice(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req)(s =>
       respond(files.node(Viewer.of(s), id, Access.View)) {
-        (
-          n,
-          a
-        ) =>
+        (n, a) =>
           okJson(office.config(
             n,
             (s.userId.toString, s.user.name),
@@ -49,10 +42,7 @@ final class OfficeRoutes(
       }
     )
 
-  private def getOnlyofficeDownload(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def getOnlyofficeDownload(req: Request[IO], id: UUID): IO[Response[IO]] =
     office.checkUrl(param(req, "t"), id) match {
       case Left(e) => err(ErrorCode.OfficeTokenInvalid, e)
       case Right(_) => nodes.find(id).flatMap {
@@ -61,10 +51,7 @@ final class OfficeRoutes(
         }
     }
 
-  private def postOnlyofficeCallback(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def postOnlyofficeCallback(req: Request[IO], id: UUID): IO[Response[IO]] =
     office.checkUrl(param(req, "t"), id) match {
       case Left(e) => dsReply(1, e).map(_.withStatus(Status.Forbidden))
       case Right(t) =>
@@ -106,10 +93,7 @@ final class OfficeRoutes(
     }
 
   /** 保存してよいか（編集を許した設定で、その人・そのリンクにいまも編集の権限があるか。共有を外したあとは保存させない）。 */
-  private def mayStillEdit(
-    t: Json,
-    n: Node
-  ): IO[Boolean] = {
+  private def mayStillEdit(t: Json, n: Node): IO[Boolean] = {
     val c = t.hcursor
     if !c.get[Boolean]("edit").contains(true) then IO.pure(false)
     else
@@ -127,10 +111,7 @@ final class OfficeRoutes(
   }
 
   /** Document Server への応答（error が 0 なら成功）。 */
-  private def dsReply(
-    error: Int,
-    message: String = ""
-  ): IO[Response[IO]] =
+  private def dsReply(error: Int, message: String = ""): IO[Response[IO]] =
     Ok(Json.obj("error" -> error.asJson).deepMerge(if message.isEmpty then Json.obj()
     else Json.obj("message" -> message.asJson)))
 

@@ -18,10 +18,7 @@ import skawau.shared.*
  * どのツールも内部で REST API を同じキーで呼ぶので、権限・スコープ・変更履歴（経路 mcp）は REST API と同じになる。
  * 専用のツールがない操作も list_api_endpoints と call_api でできる（画面でできることはすべて）。
  */
-final class McpRoutes(
-  api: HttpRoutes[IO],
-  sessions: SessionAuth,
-  publicUrl: String) extends Http4sDsl[IO] {
+final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: String) extends Http4sDsl[IO] {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ POST -> Root / "mcp" => postMcp(req)
@@ -29,9 +26,7 @@ final class McpRoutes(
     case GET -> Root / "api" / "endpoints" => getApiEndpoints()
   }
 
-  private def postMcp(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postMcp(req: Request[IO]): IO[Response[IO]] =
     req.headers.get[Authorization] match {
       case Some(auth @ Authorization(Credentials.Token(AuthScheme.Bearer, _))) =>
         sessions.fromRequest(Request[IO](Method.GET, Uri.unsafeFromString("/mcp")).putHeaders(auth)).flatMap {
@@ -68,11 +63,8 @@ final class McpRoutes(
 
   // ------------------------------------------------------------------ REST API の内部呼び出し
 
-  private final class Caller(
-    auth: Authorization) {
-    private def run(
-      req0: Request[IO]
-    ): IO[Either[String, Response[IO]]] =
+  private final class Caller(auth: Authorization) {
+    private def run(req0: Request[IO]): IO[Either[String, Response[IO]]] =
       api.run(req0.putHeaders(auth, McpHeader -> "1")).value.flatMap {
         case None => IO.pure(Left("404 見つかりません"))
         case Some(r) if r.status.isSuccess => IO.pure(Right(r))
@@ -83,43 +75,31 @@ final class McpRoutes(
           }
       }
 
-    def apply(
-      method: Method,
-      uri: Uri,
-      body: Option[Json] = None
-    ): IO[Either[String, Json]] =
+    def apply(method: Method, uri: Uri, body: Option[Json] = None): IO[Either[String, Json]] =
       run(McpRoutes.request(method, uri, body)).flatMap(_.flatTraverse(r =>
         r.bodyText.compile.string.map(s =>
           Right(if s.isEmpty then Json.Null else parse(s).getOrElse(Json.fromString(s)))
         )
       ))
 
-    def bytes(
-      uri: Uri
-    ): IO[Either[String, Array[Byte]]] = run(Request[IO](Method.GET, uri)).flatMap(_.traverse(_.body.compile.to(Array)))
+    def bytes(uri: Uri): IO[Either[String, Array[Byte]]] =
+      run(Request[IO](Method.GET, uri)).flatMap(_.traverse(_.body.compile.to(Array)))
 
-    def putText(
-      uri: Uri,
-      text: String
-    ): IO[Either[String, Json]] = apply(Method.PUT, uri, Some(Json.fromString(text)))
+    def putText(uri: Uri, text: String): IO[Either[String, Json]] = apply(Method.PUT, uri, Some(Json.fromString(text)))
   }
 
-  private def path(
-    segments: String*
-  ): Uri = Uri(path = Uri.Path(segments.toVector.map(Uri.Path.Segment(_)), absolute = true))
+  private def path(segments: String*): Uri =
+    Uri(path = Uri.Path(segments.toVector.map(Uri.Path.Segment(_)), absolute = true))
 
   // ------------------------------------------------------------------ ツール
 
   private type Result = IO[Either[String, String]]
 
-  private final case class Tool(
-    name: String,
-    description: String,
-    schema: Json,
-    readOnly: Boolean,
-    destructive: Boolean = false
-  )(
-    val run: (Caller, ACursor) => Result) {
+  private final case class Tool(name: String,
+                                description: String,
+                                schema: Json,
+                                readOnly: Boolean,
+                                destructive: Boolean = false)(val run: (Caller, ACursor) => Result) {
     def json: Json = Json.obj(
       "name" -> name.asJson,
       "description" -> description.asJson,
@@ -132,58 +112,30 @@ final class McpRoutes(
     )
   }
 
-  private def schema(
-    required: List[String],
-    props: (String, Json)*
-  ): Json =
+  private def schema(required: List[String], props: (String, Json)*): Json =
     Json.obj("type" -> "object".asJson, "properties" -> Json.obj(props*), "required" -> required.asJson)
-  private def str(
-    d: String
-  ): Json = Json.obj("type" -> "string".asJson, "description" -> d.asJson)
-  private def int(
-    d: String
-  ): Json = Json.obj("type" -> "integer".asJson, "description" -> d.asJson)
-  private def bool(
-    d: String
-  ): Json = Json.obj("type" -> "boolean".asJson, "description" -> d.asJson)
-  private def strs(
-    d: String
-  ): Json =
+  private def str(d: String): Json = Json.obj("type" -> "string".asJson, "description" -> d.asJson)
+  private def int(d: String): Json = Json.obj("type" -> "integer".asJson, "description" -> d.asJson)
+  private def bool(d: String): Json = Json.obj("type" -> "boolean".asJson, "description" -> d.asJson)
+  private def strs(d: String): Json =
     Json.obj("type" -> "array".asJson, "items" -> Json.obj("type" -> "string".asJson), "description" -> d.asJson)
 
   private val fileArg = "ファイル・フォルダの ID、または自分のルートからのパス（/資料/2026/報告.docx）"
 
-  private def need(
-    a: ACursor,
-    k: String
-  ): Either[String, String] = a.get[String](k).toOption.map(_.trim).filter(_.nonEmpty).toRight(s"$k を指定してください")
-  private def opt(
-    a: ACursor,
-    k: String
-  ): Option[String] = a.get[String](k).toOption.map(_.trim).filter(_.nonEmpty)
-  private def s(
-    j: Json,
-    k: String
-  ): String = j.hcursor.get[String](k).getOrElse("")
+  private def need(a: ACursor, k: String): Either[String, String] =
+    a.get[String](k).toOption.map(_.trim).filter(_.nonEmpty).toRight(s"$k を指定してください")
+  private def opt(a: ACursor, k: String): Option[String] = a.get[String](k).toOption.map(_.trim).filter(_.nonEmpty)
+  private def s(j: Json, k: String): String = j.hcursor.get[String](k).getOrElse("")
 
-  extension [A](
-    e: Either[String, A]
-  ) {
-    private def withArgs(
-      f: A => Result
-    ): Result = e.fold(err => IO.pure(Left(err)), f)
+  extension [A](e: Either[String, A]) {
+    private def withArgs(f: A => Result): Result = e.fold(err => IO.pure(Left(err)), f)
   }
-  extension (
-    r: IO[Either[String, Json]]
-  ) {
+  extension (r: IO[Either[String, Json]]) {
     private def asText: Result = r.map(_.map(_.spaces2))
   }
 
   /** ID またはパスを、ノードの情報（NodeHitDto の JSON: node・path）にする。 */
-  private def resolve(
-    call: Caller,
-    v: String
-  ): IO[Either[String, Json]] =
+  private def resolve(call: Caller, v: String): IO[Either[String, Json]] =
     uuidOpt(v) match {
       case Some(id) => call(Method.GET, path("api", "files", id.toString))
       case None if v.trim == "/" || v.trim.isEmpty =>
@@ -193,26 +145,15 @@ final class McpRoutes(
       case None => call(Method.GET, path("api", "files", "resolve").withQueryParam("path", v))
     }
 
-  private def resolveId(
-    call: Caller,
-    v: String
-  ): IO[Either[String, String]] =
+  private def resolveId(call: Caller, v: String): IO[Either[String, String]] =
     resolve(call, v).map(_.map(h => s(h.hcursor.downField("node").focus.getOrElse(Json.Null), "id")))
 
   /** ID またはパスで指定したファイルの ID で処理する。 */
-  private def onFile[A](
-    call: Caller,
-    ref: String
-  )(
-    f: String => IO[Either[String, A]]
-  ): IO[Either[String, A]] =
+  private def onFile[A](call: Caller, ref: String)(f: String => IO[Either[String, A]]): IO[Either[String, A]] =
     resolveId(call, ref).flatMap(_.flatTraverse(f))
 
   /** 一覧の1行（「📁 名前 / 12.3 KB / 更新 / id」）。 */
-  private def line(
-    n: Json,
-    where: Option[String] = None
-  ): String = {
+  private def line(n: Json, where: Option[String] = None): String = {
     val c = n.hcursor
     val dir = c.get[Boolean]("isDir").getOrElse(false)
     val name = s(n, "name")
@@ -223,9 +164,7 @@ final class McpRoutes(
       )}、所有者 $owner、権限 ${s(n, "perm")}${where.fold("")(w => s"、場所 $w")}） id=${s(n, "id")}"
   }
 
-  private def hits(
-    j: Json
-  ): String = {
+  private def hits(j: Json): String = {
     val xs = j.asArray.toList.flatten
     if xs.isEmpty then "（ありません）"
     else
@@ -234,18 +173,13 @@ final class McpRoutes(
       ).mkString("\n")
   }
 
-  private def urlOf(
-    n: Json
-  ): String = {
+  private def urlOf(n: Json): String = {
     val id = s(n, "id")
     if n.hcursor.get[Boolean]("isDir").getOrElse(false) then s"$base/files/$id" else s"$base/view/$id"
   }
 
   /** 移動・コピーの結果。 */
-  private def batch(
-    j: Json,
-    verb: String
-  ): String = {
+  private def batch(j: Json, verb: String): String = {
     val done = j.hcursor.downField("done").as[List[Json]].getOrElse(Nil)
     val errs = j.hcursor.downField("errors").as[List[String]].getOrElse(Nil)
     (s"${done.size}件を$verb しました" ::
@@ -253,10 +187,7 @@ final class McpRoutes(
   }
 
   /** 共有の相手（名前・メール・グループ名・ID）を、ユーザーかグループの ID にする。 */
-  private def sharee(
-    call: Caller,
-    who: String
-  ): IO[Either[String, (String, String)]] =
+  private def sharee(call: Caller, who: String): IO[Either[String, (String, String)]] =
     call(Method.GET, path("api", "sharees").withQueryParam("q", who)).map(_.flatMap { j =>
       val us = j.hcursor.downField("users").as[List[Json]].getOrElse(Nil)
       val gs = j.hcursor.downField("groups").as[List[Json]].getOrElse(Nil)
@@ -270,11 +201,8 @@ final class McpRoutes(
     })
 
   private val tools: List[Tool] = List(
-    Tool("get_me", "自分（この APIキーの持ち主）の情報、容量の使用量、キーのスコープ。", schema(Nil), readOnly = true)(
-      (
-        call,
-        _
-      ) => call(Method.GET, path("api", "me")).asText
+    Tool("get_me", "自分（この APIキーの持ち主）の情報、容量の使用量、キーのスコープ。", schema(Nil), readOnly = true)((call, _) =>
+      call(Method.GET, path("api", "me")).asText
     ),
 
     Tool(
@@ -283,10 +211,7 @@ final class McpRoutes(
       schema(Nil, "folder" -> str(fileArg)),
       readOnly = true
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         onFile(call, opt(a, "folder").getOrElse("/"))(id =>
           call(Method.GET, path("api", "files", id, "children")).map(_.map { f =>
             val crumbs =
@@ -304,10 +229,7 @@ final class McpRoutes(
       schema(List("query"), "query" -> str("探す語（空白区切りで AND）"), "limit" -> int("件数（既定50）")),
       readOnly = true
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         need(a, "query").withArgs(q =>
           call(
             Method.GET,
@@ -322,10 +244,7 @@ final class McpRoutes(
       schema(List("file"), "file" -> str(fileArg)),
       readOnly = true
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         need(a, "file").withArgs(f =>
           resolve(call, f).map(_.map(h =>
             h.deepMerge(Json.obj("url" -> urlOf(h.hcursor.downField("node").focus.getOrElse(Json.Null)).asJson)).spaces2
@@ -339,10 +258,7 @@ final class McpRoutes(
       schema(List("file"), "file" -> str(fileArg), "maxChars" -> int(s"返す文字数の上限（既定 $DefaultChars）")),
       readOnly = true
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         need(a, "file").withArgs(f =>
           resolve(call, f).flatMap {
             case Left(e) => IO.pure(Left(e))
@@ -383,20 +299,13 @@ final class McpRoutes(
       ),
       readOnly = false
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         (
           need(a, "folder"),
           need(a, "name"),
           a.get[String]("content").toOption.toRight("content を指定してください")
         ).tupled.withArgs {
-          (
-            folder,
-            name,
-            content
-          ) =>
+          (folder, name, content) =>
             onFile(call, folder) { id =>
               val uri = path("api", "files", id, "upload").withQueryParam("name", name)
               val u2 = if a.get[Boolean]("overwrite").getOrElse(false) then
@@ -415,20 +324,13 @@ final class McpRoutes(
       schema(List("parent", "name"), "parent" -> str("親のフォルダ（" + fileArg + "）"), "name" -> str("フォルダの名前")),
       readOnly = false
     ) {
-      (
-        call,
-        a
-      ) =>
-        (need(a, "parent"), need(a, "name")).tupled.withArgs(
-          (
-            p,
-            nm
-          ) =>
-            onFile(call, p)(id =>
-              call(Method.POST, path("api", "files", id, "folders"), Some(Json.obj("name" -> nm.asJson))).map(_.map(n =>
-                s"フォルダ「${s(n, "name")}」を作りました id=${s(n, "id")} ${urlOf(n)}"
-              ))
-            )
+      (call, a) =>
+        (need(a, "parent"), need(a, "name")).tupled.withArgs((p, nm) =>
+          onFile(call, p)(id =>
+            call(Method.POST, path("api", "files", id, "folders"), Some(Json.obj("name" -> nm.asJson))).map(_.map(n =>
+              s"フォルダ「${s(n, "name")}」を作りました id=${s(n, "id")} ${urlOf(n)}"
+            ))
+          )
         )
     },
 
@@ -442,20 +344,13 @@ final class McpRoutes(
       ),
       readOnly = false
     ) {
-      (
-        call,
-        a
-      ) =>
-        (need(a, "folder"), need(a, "name")).tupled.withArgs(
-          (
-            p,
-            nm
-          ) =>
-            onFile(call, p)(id =>
-              call(Method.POST, path("api", "files", id, "new"), Some(Json.obj("name" -> nm.asJson))).map(_.map(n =>
-                s"「${s(n, "name")}」を作りました id=${s(n, "id")} $base/office/${s(n, "id")}"
-              ))
-            )
+      (call, a) =>
+        (need(a, "folder"), need(a, "name")).tupled.withArgs((p, nm) =>
+          onFile(call, p)(id =>
+            call(Method.POST, path("api", "files", id, "new"), Some(Json.obj("name" -> nm.asJson))).map(_.map(n =>
+              s"「${s(n, "name")}」を作りました id=${s(n, "id")} $base/office/${s(n, "id")}"
+            ))
+          )
         )
     },
 
@@ -465,20 +360,13 @@ final class McpRoutes(
       schema(List("file", "name"), "file" -> str(fileArg), "name" -> str("新しい名前")),
       readOnly = false
     ) {
-      (
-        call,
-        a
-      ) =>
-        (need(a, "file"), need(a, "name")).tupled.withArgs(
-          (
-            f,
-            nm
-          ) =>
-            onFile(call, f)(id =>
-              call(Method.PATCH, path("api", "files", id), Some(Json.obj("name" -> nm.asJson))).map(_.map(n =>
-                s"「${s(n, "name")}」に変えました"
-              ))
-            )
+      (call, a) =>
+        (need(a, "file"), need(a, "name")).tupled.withArgs((f, nm) =>
+          onFile(call, f)(id =>
+            call(Method.PATCH, path("api", "files", id), Some(Json.obj("name" -> nm.asJson))).map(_.map(n =>
+              s"「${s(n, "name")}」に変えました"
+            ))
+          )
         )
     },
 
@@ -494,18 +382,12 @@ final class McpRoutes(
       ),
       readOnly = false
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         (
           a.get[List[String]]("files").toOption.filter(_.nonEmpty).toRight("files を指定してください"),
           need(a, "to")
         ).tupled.withArgs {
-          (
-            fs,
-            to
-          ) =>
+          (fs, to) =>
             (fs.traverse(resolveId(call, _)).map(_.sequence), resolveId(call, to)).tupled.flatMap {
               case (Right(ids), Right(target)) =>
                 val copy = a.get[Boolean]("copy").getOrElse(false)
@@ -528,10 +410,7 @@ final class McpRoutes(
       readOnly = false,
       destructive = true
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         a.get[List[String]]("files").toOption.filter(_.nonEmpty).toRight("files を指定してください").withArgs(fs =>
           fs.traverse(resolveId(call, _)).map(_.sequence).flatMap(_.flatTraverse(ids =>
             call(Method.POST, path("api", "files", "delete"), Some(IdsReq(ids.flatMap(uuidOpt)).asJson)).map(_.map {
@@ -546,21 +425,15 @@ final class McpRoutes(
     },
 
     Tool("list_recent", "最近更新したファイル。", schema(Nil, "limit" -> int("件数（既定30）")), readOnly = true) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         call(
           Method.GET,
           path("api", "recent").withQueryParam("limit", a.get[Int]("limit").getOrElse(30))
         ).map(_.map(hits))
     },
 
-    Tool("list_shared_with_me", "ほかの人から共有されたもの。", schema(Nil), readOnly = true)(
-      (
-        call,
-        _
-      ) => call(Method.GET, path("api", "shared-with-me")).map(_.map(hits))
+    Tool("list_shared_with_me", "ほかの人から共有されたもの。", schema(Nil), readOnly = true)((call, _) =>
+      call(Method.GET, path("api", "shared-with-me")).map(_.map(hits))
     ),
 
     Tool(
@@ -575,32 +448,25 @@ final class McpRoutes(
       ),
       readOnly = false
     ) {
-      (
-        call,
-        a
-      ) =>
-        (need(a, "file"), need(a, "with")).tupled.withArgs(
-          (
-            f,
-            who
-          ) =>
-            (resolveId(call, f), sharee(call, who)).tupled.flatMap {
-              case (Right(id), Right((kind, target))) =>
-                val req = CreateShareReq(
-                  kind,
-                  Option.when(kind == ShareKind.User)(uuidOpt(target)).flatten,
-                  Option.when(kind == ShareKind.Group)(uuidOpt(target)).flatten,
-                  opt(a, "permission").getOrElse(Perm.View),
-                  None,
-                  opt(a, "expiresAt"),
-                  None
-                )
-                call(Method.POST, path("api", "files", id, "shares"), Some(req.asJson.dropNullValues)).map(_.map(sh =>
-                  s"${sh.hcursor.downField("user").get[String]("name").orElse(sh.hcursor.downField("group").get[String]("name")).getOrElse(who)} と共有しました（${Perm.label(s(sh, "permission"))}）"
-                ))
-              case (Left(e), _) => IO.pure(Left(e))
-              case (_, Left(e)) => IO.pure(Left(e))
-            }
+      (call, a) =>
+        (need(a, "file"), need(a, "with")).tupled.withArgs((f, who) =>
+          (resolveId(call, f), sharee(call, who)).tupled.flatMap {
+            case (Right(id), Right((kind, target))) =>
+              val req = CreateShareReq(
+                kind,
+                Option.when(kind == ShareKind.User)(uuidOpt(target)).flatten,
+                Option.when(kind == ShareKind.Group)(uuidOpt(target)).flatten,
+                opt(a, "permission").getOrElse(Perm.View),
+                None,
+                opt(a, "expiresAt"),
+                None
+              )
+              call(Method.POST, path("api", "files", id, "shares"), Some(req.asJson.dropNullValues)).map(_.map(sh =>
+                s"${sh.hcursor.downField("user").get[String]("name").orElse(sh.hcursor.downField("group").get[String]("name")).getOrElse(who)} と共有しました（${Perm.label(s(sh, "permission"))}）"
+              ))
+            case (Left(e), _) => IO.pure(Left(e))
+            case (_, Left(e)) => IO.pure(Left(e))
+          }
         )
     },
 
@@ -617,10 +483,7 @@ final class McpRoutes(
       ),
       readOnly = false
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         need(a, "file").withArgs(f =>
           onFile(call, f) { id =>
             {
@@ -649,10 +512,7 @@ final class McpRoutes(
       schema(List("file"), "file" -> str(fileArg)),
       readOnly = true
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         need(a, "file").withArgs(f =>
           onFile(call, f)(id =>
             call(Method.GET, path("api", "files", id, "versions")).map(_.map(j =>
@@ -673,10 +533,7 @@ final class McpRoutes(
       schema(Nil, "limit" -> int("件数（既定50）")),
       readOnly = true
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         call(
           Method.GET,
           path("api", "activity").withQueryParam("limit", a.get[Int]("limit").getOrElse(50))
@@ -688,10 +545,7 @@ final class McpRoutes(
     },
 
     Tool("list_trash", "ごみ箱の中身（自分が所有するもの）。戻すには restore_from_trash。", schema(Nil), readOnly = true) {
-      (
-        call,
-        _
-      ) =>
+      (call, _) =>
         call(Method.GET, path("api", "trash")).map(_.map(j =>
           j.asArray.toList.flatten.map(t =>
             s"- ${s(t, "name")}（元の場所 ${s(t, "originalPath")}、削除 ${s(t, "deletedAt").take(16)}） id=${s(t, "id")}"
@@ -708,10 +562,7 @@ final class McpRoutes(
       schema(List("id"), "id" -> str("ごみ箱の項目の ID（list_trash を参照）")),
       readOnly = false
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         need(a, "id").withArgs(id =>
           call(Method.POST, path("api", "trash", id, "restore")).map(_.map(n => s"「${s(n, "name")}」を戻しました ${urlOf(n)}"))
         )
@@ -723,10 +574,7 @@ final class McpRoutes(
       schema(Nil),
       readOnly = true
     ) {
-      (
-        _,
-        _
-      ) =>
+      (_, _) =>
         IO.pure(Right(ApiCatalog.all.map(e => s"${e.method} ${e.path} — ${e.description}").mkString("\n")))
     },
 
@@ -742,15 +590,9 @@ final class McpRoutes(
       ),
       readOnly = false
     ) {
-      (
-        call,
-        a
-      ) =>
+      (call, a) =>
         (need(a, "method").map(_.toUpperCase), need(a, "path")).tupled.withArgs {
-          (
-            m,
-            p
-          ) =>
+          (m, p) =>
             (
               Method.fromString(m).toOption.filter(x => Set("GET", "POST", "PUT", "PATCH", "DELETE")(x.name)),
               Uri.fromString(p).toOption.filter(_.path.renderString.startsWith("/api/"))
@@ -767,29 +609,16 @@ final class McpRoutes(
 
   // ------------------------------------------------------------------ JSON-RPC
 
-  private def ok(
-    id: Json,
-    result: Json
-  ): Json = Json.obj("jsonrpc" -> "2.0".asJson, "id" -> id, "result" -> result)
-  private def rpcFail(
-    id: Json,
-    code: Int,
-    msg: String
-  ): Json =
+  private def ok(id: Json, result: Json): Json = Json.obj("jsonrpc" -> "2.0".asJson, "id" -> id, "result" -> result)
+  private def rpcFail(id: Json, code: Int, msg: String): Json =
     Json.obj("jsonrpc" -> "2.0".asJson, "id" -> id, "error" -> Json.obj("code" -> code.asJson, "message" -> msg.asJson))
-  private def toolResult(
-    r: Either[String, String]
-  ): Json =
+  private def toolResult(r: Either[String, String]): Json =
     Json.obj(
       "content" -> Json.arr(Json.obj("type" -> "text".asJson, "text" -> r.merge.asJson)),
       "isError" -> r.isLeft.asJson
     )
 
-  private def handle(
-    call: Caller,
-    s: AuthSession,
-    msg: Json
-  ): IO[Option[Json]] = {
+  private def handle(call: Caller, s: AuthSession, msg: Json): IO[Option[Json]] = {
     val c = msg.hcursor
     val params = c.downField("params")
     c.downField("id").focus match {
@@ -842,11 +671,7 @@ object McpRoutes {
    * REST API を内部で呼ぶ要求。body が JSON の文字列なら、引用符で囲まず、そのまま本文にする
    * （write_file のアップロードや中身の置き換えは本文がそのまま中身なので、JSON の文字列にすると `"<svg ...\n..."` のように壊れる）。
    */
-  def request(
-    method: Method,
-    uri: Uri,
-    body: Option[Json]
-  ): Request[IO] = {
+  def request(method: Method, uri: Uri, body: Option[Json]): Request[IO] = {
     val req = Request[IO](method, uri)
     body match {
       case None => req

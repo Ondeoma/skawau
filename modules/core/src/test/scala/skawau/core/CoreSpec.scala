@@ -62,9 +62,7 @@ class CoreSpec extends munit.FunSuite {
     assert(FileKind.inlineSafe("ok.pdf"))
   }
 
-  private def entries(
-    bytes: Array[Byte]
-  ): List[String] = {
+  private def entries(bytes: Array[Byte]): List[String] = {
     val z = new ZipInputStream(new ByteArrayInputStream(bytes))
     Iterator.continually(z.getNextEntry).takeWhile(_ != null).map(_.getName).toList
   }
@@ -97,16 +95,11 @@ class CoreSpec extends munit.FunSuite {
     }
   }
 
-  private def zip(
-    parts: (String, String)*
-  ): Array[Byte] = {
+  private def zip(parts: (String, String)*): Array[Byte] = {
     val out = new java.io.ByteArrayOutputStream()
     val z = new java.util.zip.ZipOutputStream(out)
     parts.foreach {
-      (
-        n,
-        b
-      ) => z.putNextEntry(new java.util.zip.ZipEntry(n)); z.write(b.getBytes("UTF-8")); z.closeEntry()
+      (n, b) => z.putNextEntry(new java.util.zip.ZipEntry(n)); z.write(b.getBytes("UTF-8")); z.closeEntry()
     }
     z.close()
     out.toByteArray
