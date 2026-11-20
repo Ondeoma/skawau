@@ -14,12 +14,12 @@ case class State(name: RV[String] = RV(""),
                  readOnly: RV[Boolean] = RV(false),
                  days: RV[String] = RV(""),
                  created: RV[Option[String]] = RV(None),
-                 uploading: RV[Boolean] = RV(false),
+                 uploading: ActionState,
                  error: RV[String] = RV(""))
 
-def initState() = State()
+def initState() = State(uploading = useAction())
 
-def loadKeys(s: State): Unit = Store.report(Api.apiKeys())(s.keys := _)
+def loadKeys(s: State): Unit = Toasts.report(Api.apiKeys())(s.keys := _)
 
 def mounted(s: State): Unit = {
   pageTitle("個人設定")
@@ -28,29 +28,19 @@ def mounted(s: State): Unit = {
 }
 
 def saveName(s: State): Unit =
-  Store.report(Api.updateMe(s.name.v.trim)) { _ => Store.toast("保存しました"); Store.reloadMe() }
+  Toasts.report(Api.updateMe(s.name.v.trim)) { _ => Toasts.show("保存しました"); Store.reloadMe() }
 
 /** アイコンの登録（正方形に切り取って 256px に縮めてから送る）. */
-def uploadAvatar(s: State, e: dom.Event): Unit = {
-  val input = e.target.asInstanceOf[dom.HTMLInputElement]
-  Option(input.files).filter(_.length > 0).map(_(0)).foreach { file =>
-    s.uploading := true
-    Images.squareThumb(file).flatMap(Api.setAvatar).onComplete { r =>
-      s.uploading := false
-      input.value = ""
-      r match {
-        case Success(_) => Store.toast("アイコンを登録しました"); Store.reloadMe()
-        case Failure(e) => Store.error(e)
-      }
-    }
+def uploadAvatar(s: State, e: dom.Event): Unit =
+  Images.pickAvatar(e)(b => s.uploading.run(Api.setAvatar(b))) { _ =>
+    Toasts.show("アイコンを登録しました")
+    Store.reloadMe()
   }
-}
 
 def removeAvatar(): Unit = Dialog.confirm("アイコンの画像を外しますか？（名前の1文字目の表示に戻ります）", "外す") {
-  Store.report(Api.removeAvatar()) { _ => Store.toast("アイコンを外しました"); Store.reloadMe() }
+  Toasts.report(Api.removeAvatar()) { _ => Toasts.show("アイコンを外しました"); Store.reloadMe() }
 }
 
-def meBrief = Store.me.mapC(_.map(m => UserBrief(m.id, m.name, m.avatarUrl)))
 def hasAvatar = Store.me.mapC(_.exists(_.avatarUrl.exists(_.startsWith("/api/users/"))))
 
 def create(s: State): Unit = {
@@ -64,7 +54,7 @@ def create(s: State): Unit = {
 
 def revoke(s: State, k: ApiKeyDto): Unit =
   Dialog.confirm(s"「${k.name}」を失効させますか？このパスワードを使っている機器はつながらなくなります。", "失効させる") {
-    Store.report(Api.revokeApiKey(k.id))(_ => loadKeys(s))
+    Toasts.report(Api.revokeApiKey(k.id))(_ => loadKeys(s))
   }
 
 def davUrl = Store.config.mapC(_.map(_.webdavUrl).getOrElse(""))
@@ -86,11 +76,11 @@ def hasError(s: State) = s.error.mapC(_.nonEmpty)
     <section class="panel">
       <h2>プロフィール</h2>
       <div class="row avatar-row">
-        <Avatar :user="meBrief.v" :size="64" />
+        <Avatar :user="Store.mePerson.v" :size="64" />
         <div>
           <label class="btn small">画像を選ぶ<input type="file" accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" @change="uploadAvatar(s, event)"></label>
           <button v-if="hasAvatar" class="ghost small" @click="removeAvatar()">外す</button>
-          <span v-if="s.uploading" class="muted small">アップロード中…</span>
+          <span v-if="s.uploading.busy" class="muted small">アップロード中…</span>
           <div class="muted small">PNG・JPEG・GIF・WebP（正方形に切り取って縮めます）</div>
         </div>
       </div>

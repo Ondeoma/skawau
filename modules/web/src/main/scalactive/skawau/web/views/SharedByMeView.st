@@ -7,7 +7,7 @@ case class State(items: RV[List[SharedByMeDto]] = RV(Nil), loaded: RV[Boolean] =
 
 def initState() = State()
 
-def load(s: State): Unit = Store.report(Api.sharedByMe()) { xs => s.items := xs; s.loaded := true }
+def load(s: State): Unit = Toasts.report(Api.sharedByMe()) { xs => s.items := xs; s.loaded := true }
 
 def mounted(s: State): Unit = {
   pageTitle("共有したもの")

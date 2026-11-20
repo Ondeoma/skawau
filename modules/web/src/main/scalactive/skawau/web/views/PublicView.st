@@ -33,7 +33,7 @@ def loadInfo(s: State, props: Props): Unit = Api.publicInfo(props.token).onCompl
 
 def open(s: State, props: Props, id: Option[UUID]): Unit = {
   s.selected := Set.empty
-  Store.report(Api.publicFolder(props.token, id))(f => s.folder := Some(f))
+  Toasts.report(Api.publicFolder(props.token, id))(f => s.folder := Some(f))
 }
 
 def mounted(s: State, props: Props): Unit = {
@@ -77,7 +77,7 @@ def openNode(s: State, props: Props, n: NodeDto): Unit =
     Store.preview := Some(PreviewReq(list, math.max(0, list.indexWhere(_.id == n.id)), Some(props.token)))
   } else download(props, n)
 
-def download(props: Props, n: NodeDto): Unit = Api.download(Api.publicContentUrl(props.token, n.id, download = true))
+def download(props: Props, n: NodeDto): Unit = Dom.downloadUrl(Api.publicContentUrl(props.token, n.id, download = true), "")
 
 def actions(s: State, props: Props)(n: NodeDto): List[MenuItem] = List(
   MenuItem("開く", () => openNode(s, props, n)),
@@ -86,7 +86,7 @@ def actions(s: State, props: Props)(n: NodeDto): List[MenuItem] = List(
 
 def downloadAll(s: State, props: Props): Unit = {
   val ids = if (s.selected.v.nonEmpty) s.selected.v.toList else Nil
-  Api.download(s"/api/public/${props.token}/zip" + (if (ids.isEmpty) "" else "?ids=" + ids.mkString(",")))
+  Dom.downloadUrl(s"/api/public/${props.token}/zip" + (if (ids.isEmpty) "" else "?ids=" + ids.mkString(",")), "")
 }
 
 def officeOk(s: State) = computed { s.info.v.exists(i => Store.config.v.flatMap(_.office).isDefined && FileKind.officeType(i.name).isDefined) }
@@ -95,7 +95,7 @@ def dir(s: State): Option[UUID] = s.folder.v.map(_.folder.id).orElse(s.info.v.ma
 
 def upload(s: State, props: Props, files: List[(dom.File, String)]): Unit = dir(s).foreach { d =>
   Uploads.start(files, (name, path) => Api.publicUploadUrl(props.token, d, name, path)).foreach { _ =>
-    Store.toast("アップロードしました")
+    Toasts.show("アップロードしました")
     if (canRead(s).v) open(s, props, Some(d))
   }
 }
@@ -105,12 +105,12 @@ def pick(s: State, props: Props, e: dom.Event): Unit = upload(s, props, Uploads.
 def zoneOver(s: State, e: dom.Event): Unit = if (Dom.hasFiles(e) && canUpload(s).v) { e.preventDefault(); if (!s.over.v) s.over := true }
 def zoneDrop(s: State, props: Props, e: dom.Event): Unit = {
   s.over := false
-  if (canUpload(s).v) Uploads.dropped(e).foreach(f => Store.report(f)(upload(s, props, _)))
+  if (canUpload(s).v) Uploads.dropped(e).foreach(f => Toasts.report(f)(upload(s, props, _)))
 }
 
 def mkdir(s: State, props: Props): Unit = dir(s).foreach { d =>
   Dialog.prompt("新しいフォルダの名前", "新しいフォルダ", "作成") { name =>
-    if (name.trim.nonEmpty) Store.report(Api.publicMkdir(props.token, d, name.trim))(_ => open(s, props, Some(d)))
+    if (name.trim.nonEmpty) Toasts.report(Api.publicMkdir(props.token, d, name.trim))(_ => open(s, props, Some(d)))
   }
 }
 
@@ -131,7 +131,7 @@ def noGrid = computed(false)
         <h2>🔒 {{ title(s) }}</h2>
         <p class="muted small">このリンクはパスワードで保護されています。</p>
         <form @submit.prevent="unlock(s, props)">
-          <input type="password" v-model="s.password" placeholder="パスワード" autofocus>
+          <input type="password" v-model="s.password" placeholder="パスワード" v-focus>
           <button type="submit" class="primary">開く</button>
         </form>
         <p v-if="s.pwError.mapC(_.nonEmpty)" class="error">{{ s.pwError }}</p>
@@ -141,7 +141,7 @@ def noGrid = computed(false)
         <div class="row head">
           <div class="grow"><h1>{{ title(s) }}</h1><div class="muted small">{{ sub(s) }}</div></div>
           <button v-if="officeOk(s)" class="primary" @click='Router.go("/s/" + props.token + "/office/" + s.info.v.get.rootId)'>ONLYOFFICE で開く</button>
-          <button v-if="canRead(s)" @click='Api.download(Api.publicContentUrl(props.token, s.info.v.get.rootId, true))'>⬇️ ダウンロード</button>
+          <button v-if="canRead(s)" @click='Dom.downloadUrl(Api.publicContentUrl(props.token, s.info.v.get.rootId, true), "")'>⬇️ ダウンロード</button>
         </div>
         <template v-for="n in singleNode(s)">
           <FileContent v-if="FileKind.previewable(FileOps.kind(n))" :node="n" :token="Some(props.token)" />

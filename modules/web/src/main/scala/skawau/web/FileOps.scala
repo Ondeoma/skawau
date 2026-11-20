@@ -26,38 +26,38 @@ object FileOps {
       Store.preview := Some(PreviewReq(list, math.max(0, list.indexWhere(_.id == n.id))))
     } else download(n)
 
-  def download(n: NodeDto): Unit = Api.download(Api.contentUrl(n.id, download = true))
+  def download(n: NodeDto): Unit = Dom.downloadUrl(Api.contentUrl(n.id, download = true), "")
 
   def downloadMany(ns: List[NodeDto]): Unit = ns match {
     case List(one) if !one.isDir => download(one)
-    case _ => Api.download(Api.zipUrl(ns.map(_.id)))
+    case _ => Dom.downloadUrl(Api.zipUrl(ns.map(_.id)), "")
   }
 
   def rename(n: NodeDto): Unit =
     Dialog.prompt("新しい名前", n.name, "名前を変更") { name =>
-      if (name.trim.nonEmpty && name.trim != n.name) Store.report(Api.rename(n.id, name.trim))(_ => Store.changed())
+      if (name.trim.nonEmpty && name.trim != n.name) Toasts.report(Api.rename(n.id, name.trim))(_ => Store.changed())
     }
 
   def trash(ns: List[NodeDto])(after: => Unit = ()): Unit = if (ns.nonEmpty) {
     val what = if (ns.size == 1) s"「${ns.head.name}」" else s"${ns.size}件"
     Dialog.confirm(s"$what をごみ箱に移動しますか？（ごみ箱から元に戻せます）", "ごみ箱へ") {
-      Store.report(Api.trash(ns.map(_.id))) { r =>
+      Toasts.report(Api.trash(ns.map(_.id))) { r =>
         if (r.errors.nonEmpty) Dialog.alert("移動できなかったもの:\n" + r.errors.mkString("\n"))
-        else Store.toast(s"$what をごみ箱に移動しました", Some("/trash"))
+        else Toasts.show(s"$what をごみ箱に移動しました", Some("/trash"))
         Store.changed()
         after
       }
     }
   }
 
-  def toggleFavorite(n: NodeDto): Unit = Store.report(Api.favorite(n.id, !n.favorite)) { _ =>
-    Store.toast(if (n.favorite) "お気に入りから外しました" else "お気に入りに追加しました")
+  def toggleFavorite(n: NodeDto): Unit = Toasts.report(Api.favorite(n.id, !n.favorite)) { _ =>
+    Toasts.show(if (n.favorite) "お気に入りから外しました" else "お気に入りに追加しました")
     Store.changed()
   }
 
   def newFolder(parent: UUID): Unit =
     Dialog.prompt("新しいフォルダの名前", "新しいフォルダ", "作成") { name =>
-      if (name.trim.nonEmpty) Store.report(Api.mkdir(parent, name.trim))(_ => Store.changed())
+      if (name.trim.nonEmpty) Toasts.report(Api.mkdir(parent, name.trim))(_ => Store.changed())
     }
 
   /** 新しいファイル（Office は作ったあとエディタで開く）. */
@@ -66,7 +66,7 @@ object FileOps {
       val name = name0.trim
       if (name.nonEmpty) {
         val fixed = if (FileKind.ext(name) == ext) name else s"$name.$ext"
-        Store.report(Api.newFile(parent, fixed)) { n =>
+        Toasts.report(Api.newFile(parent, fixed)) { n =>
           Store.changed(); if (officeOpenable(n) || ext == "txt" || ext == "md") open(n, List(n))
         }
       }

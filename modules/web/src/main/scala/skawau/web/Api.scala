@@ -11,19 +11,17 @@ import scala.concurrent.{Future, Promise}
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
 
-/** API の呼び出しのエラー. */
-final case class ApiError(status: Int, message: String) extends Exception(message)
+/** バックエンドの REST API（共通部分は sbirds-lib の ApiBase）. 公開リンクの画面では 401 でログインに飛ばさない（パスワードの入力を求める）. */
+object Api extends sbirds.web.ApiBase {
 
-/** バックエンドの REST API. 401 はログイン画面へ（公開リンクの画面を除く）、エラーは {"error": ...} の文言にする. */
-object Api {
+  override protected def stayOnUnauthorized: Boolean = {
+    val p = dom.window.location.pathname
+    p.startsWith("/login") || p.startsWith("/s/")
+  }
 
-  /** 公開リンクの画面では 401 でログインに飛ばさない（パスワードの入力を求める）. */
-  private def isPublicPage: Boolean = dom.window.location.pathname.startsWith("/s/")
-
-  private def toLogin(): Unit = {
+  private def toLogin(): Unit = if (!stayOnUnauthorized) {
     val back = dom.window.location.pathname + dom.window.location.search
-    if (!dom.window.location.pathname.startsWith("/login") && !isPublicPage)
-      dom.window.location.href = "/auth/login?returnTo=" + js.URIUtils.encodeURIComponent(back)
+    dom.window.location.href = loginUrl(back)
   }
 
   private def errorOf(status: Int, statusText: String, text: String): ApiError =
@@ -31,44 +29,6 @@ object Api {
       status,
       parse(text).toOption.flatMap(_.hcursor.get[String]("error").toOption).getOrElse(s"$status $statusText")
     )
-
-  /** fetch の設定（同じオリジンの Cookie を付ける. body は JSON の文字列）. */
-  def init(method: dom.HttpMethod, body: Option[String] = None): dom.RequestInit = {
-    val i = new dom.RequestInit {}
-    i.method = method
-    i.credentials = dom.RequestCredentials.`same-origin`
-    body.foreach { b =>
-      i.headers = js.Dictionary("Content-Type" -> "application/json")
-      i.body = b
-    }
-    i
-  }
-
-  private def request(method: dom.HttpMethod, url: String, body: Option[Json] = None): Future[Option[Json]] = {
-    dom.fetch(url, init(method, body.map(_.noSpaces))).toFuture.flatMap { res =>
-      if (res.status == 401 && !url.startsWith("/api/public/")) {
-        toLogin()
-        Future.failed(ApiError(401, "ログインしてください"))
-      } else if (!res.ok)
-        res.text().toFuture.recover(_ => "").flatMap(t => Future.failed(errorOf(res.status, res.statusText, t)))
-      else if (res.status == 204) Future.successful(None)
-      else res.text().toFuture.map(t => if (t.isEmpty) None else Some(parse(t).fold(throw _, identity)))
-    }
-  }
-
-  private def as[A: Decoder](j: Option[Json]): A =
-    j.getOrElse(Json.Null).as[A].fold(e => throw ApiError(0, e.getMessage), identity)
-
-  def get[A: Decoder](url: String): Future[A] = request(dom.HttpMethod.GET, url).map(as[A])
-  def post[A: Decoder](url: String, body: Json = Json.obj()): Future[A] =
-    request(dom.HttpMethod.POST, url, Some(body)).map(as[A])
-  def patch[A: Decoder](url: String, body: Json): Future[A] = request(dom.HttpMethod.PATCH, url, Some(body)).map(as[A])
-  def send(method: dom.HttpMethod, url: String, body: Option[Json] = None): Future[Unit] =
-    request(method, url, body).map(_ => ())
-  def delete(url: String): Future[Unit] = send(dom.HttpMethod.DELETE, url)
-  def postUnit(url: String, body: Json = Json.obj()): Future[Unit] = send(dom.HttpMethod.POST, url, Some(body))
-  def putUnit(url: String, body: Json): Future[Unit] = send(dom.HttpMethod.PUT, url, Some(body))
-  def patchUnit(url: String, body: Json): Future[Unit] = send(dom.HttpMethod.PATCH, url, Some(body))
 
   /** 本文をそのまま送る（テキストの保存）. */
   def putText[A: Decoder](url: String, text: String): Future[A] = {
@@ -87,13 +47,6 @@ object Api {
     )
   }
 
-  def enc(s: String): String = js.URIUtils.encodeURIComponent(s)
-
-  def query(params: (String, Option[String])*): String = {
-    val q = params.collect { case (k, Some(v)) if v.nonEmpty => s"$k=${enc(v)}" }
-    if (q.isEmpty) "" else q.mkString("?", "&", "")
-  }
-
   /**
    * ファイルを送る（XMLHttpRequest で進み具合を onProgress(送った, 全体) に知らせる）.
    * 戻り値の abort で取りやめられる.
@@ -108,7 +61,7 @@ object Api {
       val t = xhr.responseText
       if (xhr.status >= 200 && xhr.status < 300) p.tryComplete(scala.util.Try(as[A](parse(t).toOption)))
       else {
-        if (xhr.status == 401 && !url.startsWith("/api/public/")) toLogin()
+        if (xhr.status == 401) toLogin()
         p.tryFailure(errorOf(xhr.status, xhr.statusText, t))
       }
     }
@@ -226,15 +179,5 @@ object Api {
     s"/api/public/$token/content" + query("id" -> Some(id.toString), "download" -> Option.when(download)("1"))
   def publicUploadUrl(token: String, dir: UUID, name: String, path: String): String =
     s"/api/public/$token/upload" + query("dir" -> Some(dir.toString), "name" -> Some(name), "path" -> Some(path))
-
-  /** ブラウザにダウンロードさせる. */
-  def download(url: String): Unit = {
-    val a = dom.document.createElement("a").asInstanceOf[dom.HTMLAnchorElement]
-    a.href = url
-    a.setAttribute("download", "")
-    dom.document.body.appendChild(a)
-    a.click()
-    a.remove()
-  }
 
 }

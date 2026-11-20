@@ -47,10 +47,10 @@ def framed = bare.mapC(!_)
 
 def mounted(s: State): Unit = {
   Fallback.install(routes)
-  Store.report(Api.clientConfig())(c => Store.config := Some(c))
+  Toasts.report(Api.clientConfig())(c => Store.config := Some(c))
   val p = dom.window.location.pathname
   if (p.startsWith("/login") || p.startsWith("/s/")) s.ready := true
-  else Store.report(Api.me()) { me =>
+  else Toasts.report(Api.me()) { me =>
     Store.me := Some(me)
     AppNames.set(me.appNames)
     Observe.setUser(me.id.toString)
@@ -67,15 +67,13 @@ def search(s: State): Unit = {
 
 def logout(): Unit = Api.logout().onComplete(r => dom.window.location.href = r.getOrElse("/"))
 
-/** 左のメニューの項目（今いる場所なら強調）. */
-def navClass(prefix: String) = Router.href.mapC { h =>
+/** 「すべてのファイル」は「/」でも強調する（ほかの項目は RouterLink の active-class）. */
+def filesClass = Router.href.mapC { h =>
   val p = path(h)
-  val on = if (prefix == "/files") p == "/" || p == "/files" || p.startsWith("/files/") else p.startsWith(prefix)
-  if (on) "active" else ""
+  if (p == "/" || p == "/files" || p.startsWith("/files/")) "active" else ""
 }
 
 def userName = Store.me.mapC(_.map(_.name).getOrElse(""))
-def meBrief = Store.me.mapC(_.map(m => UserBrief(m.id, m.name, m.avatarUrl)))
 def unreadLabel = Store.unread.mapC(u => if (u.unread > 99) "99+" else u.unread.toString)
 def hasUnread = Store.unread.mapC(_.unread > 0)
 def loggedIn = Store.me.mapC(_.isDefined)
@@ -98,7 +96,7 @@ def sideClass = Store.sideOpen.mapC(o => if (o) "side open" else "side")
       🔔<span v-if="hasUnread" class="dot">{{ unreadLabel }}</span>
     </RouterLink>
     <div v-if="loggedIn" class="me">
-      <button class="ghost me-btn" @click="s.menu := !s.menu.v"><Avatar :user="meBrief.v" :size="24" /><span class="hide-sp">{{ userName }}</span> ▾</button>
+      <button class="ghost me-btn" @click="s.menu := !s.menu.v"><Avatar :user="Store.mePerson.v" :size="24" /><span class="hide-sp">{{ userName }}</span> ▾</button>
       <div v-if="s.menu" class="menu-bg" @click="s.menu := false"></div>
       <div v-if="s.menu" class="menu" @click="s.menu := false">
         <RouterLink to="/settings">個人設定・WebDAV</RouterLink>
@@ -110,16 +108,16 @@ def sideClass = Store.sideOpen.mapC(o => if (o) "side open" else "side")
   </header>
   <div v-if="framed" class="shell">
     <nav :class="sideClass" @click="Store.sideOpen := false">
-      <RouterLink to="/files" :class='navClass("/files")'><span class="ic">📁</span>すべてのファイル</RouterLink>
-      <RouterLink to="/search" :class='navClass("/search").mapC(_ + " only-sp")'><span class="ic">🔍</span>検索</RouterLink>
-      <RouterLink to="/recent" :class='navClass("/recent")'><span class="ic">🕘</span>最近</RouterLink>
-      <RouterLink to="/favorites" :class='navClass("/favorites")'><span class="ic">⭐</span>お気に入り</RouterLink>
+      <RouterLink to="/files" :class="filesClass"><span class="ic">📁</span>すべてのファイル</RouterLink>
+      <RouterLink to="/search" class="only-sp" active-class="active"><span class="ic">🔍</span>検索</RouterLink>
+      <RouterLink to="/recent" active-class="active"><span class="ic">🕘</span>最近</RouterLink>
+      <RouterLink to="/favorites" active-class="active"><span class="ic">⭐</span>お気に入り</RouterLink>
       <div class="sep"></div>
-      <RouterLink to="/shared" :class='navClass("/shared")'><span class="ic">👥</span>共有されたもの</RouterLink>
-      <RouterLink to="/shared-by-me" :class='navClass("/shared-by-me")'><span class="ic">🔗</span>共有したもの</RouterLink>
+      <RouterLink to="/shared" active-class="active"><span class="ic">👥</span>共有されたもの</RouterLink>
+      <RouterLink to="/shared-by-me" active-class="active"><span class="ic">🔗</span>共有したもの</RouterLink>
       <div class="sep"></div>
-      <RouterLink to="/activity" :class='navClass("/activity")'><span class="ic">📰</span>アクティビティ</RouterLink>
-      <RouterLink to="/trash" :class='navClass("/trash")'><span class="ic">🗑️</span>ごみ箱</RouterLink>
+      <RouterLink to="/activity" active-class="active"><span class="ic">📰</span>アクティビティ</RouterLink>
+      <RouterLink to="/trash" active-class="active"><span class="ic">🗑️</span>ごみ箱</RouterLink>
       <div v-if="loggedIn" class="quota">
         <div>容量: {{ quotaText }}</div>
         <div v-if="hasLimit" :class="quotaClass"><span :style="quotaStyle"></span></div>
@@ -135,12 +133,7 @@ def sideClass = Store.sideOpen.mapC(o => if (o) "side open" else "side")
   <Preview v-if="Store.preview.mapC(_.isDefined)" />
   <UploadPanel />
   <DialogHost />
-  <div class="toasts">
-    <div v-for="t in Store.toasts" :key="t.id" :class='if (t.error) "toast error" else "toast"'>
-      <span class="grow" @click="t.link.foreach(l => Router.go(l)); Store.dismiss(t.id)">{{ t.text }}</span>
-      <button @click="Store.dismiss(t.id)">×</button>
-    </div>
-  </div>
+  <ToastHost />
 </template>
 
 <style scoped>

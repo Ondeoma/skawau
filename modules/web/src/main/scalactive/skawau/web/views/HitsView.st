@@ -1,6 +1,5 @@
 <script lang="scala">
 import skawau.web.*
-import org.scalajs.dom
 import skawau.shared.*
 import skawau.web.parts.*
 
@@ -17,7 +16,7 @@ case class State(hits: RV[List[NodeHitDto]] = RV(Nil),
                  selected: RV[Set[UUID]] = RV(Set.empty),
                  q: RV[String] = RV(""))
 
-def initState() = State(q = RV(Option(new dom.URL(dom.window.location.href).searchParams.get("q")).getOrElse("")))
+def initState() = State(q = RV(Router.query.v.get("q").getOrElse("")))
 
 def title(props: Props): String = props.mode match {
   case "recent"    => "最近のファイル"
@@ -37,7 +36,7 @@ def load(s: State, props: Props): Unit = fetch(s, props) match {
   case None => s.hits := Nil; s.loaded := true
   case Some(f) => f.onComplete {
     case Success(hs) => s.hits := hs; s.loaded := true
-    case Failure(e)  => Store.error(e)
+    case Failure(e)  => Toasts.error(e)
   }
 }
 
@@ -71,7 +70,7 @@ def empty(props: Props): String = props.mode match {
   <div class="page wide">
     <h1>{{ title(props) }}</h1>
     <form v-if='props.mode == "search"' class="row" @submit.prevent="search(s)">
-      <input type="search" class="grow q" v-model="s.q" placeholder="名前で検索（ひらがな・カタカナ、全角・半角の違いは区別しません）" autofocus>
+      <input type="search" class="grow q" v-model="s.q" placeholder="名前で検索（ひらがな・カタカナ、全角・半角の違いは区別しません）" v-focus>
       <button type="submit" class="primary">検索</button>
     </form>
     <div class="toolbar">

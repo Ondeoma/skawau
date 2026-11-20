@@ -11,7 +11,7 @@ case class State(name: RV[String] = RV(""), email: RV[String] = RV(""), admin: R
 
 def initState() = State()
 
-def returnTo(): String = skawau.shared.ReturnTo.orRoot(Option(new dom.URL(dom.window.location.href).searchParams.get("returnTo")))
+def returnTo(): String = skawau.shared.ReturnTo.orRoot(Router.query.v.get("returnTo"))
 
 def login(s: State): Unit =
   Api.devLogin(s.name.v.trim, s.email.v.trim, s.admin.v, s.groups.v.split(',').map(_.trim).filter(_.nonEmpty).toList, returnTo()).onComplete {
@@ -29,7 +29,7 @@ def mounted(): Unit = pageTitle("ログイン")
       <h1>skawau にログイン</h1>
       <p class="muted small">開発用のログインです（IdP が設定されていない環境だけで使えます）。</p>
       <form @submit.prevent="login(s)">
-        <label class="field"><span>名前</span><input type="text" v-model="s.name" placeholder="山田 太郎" autofocus></label>
+        <label class="field"><span>名前</span><input type="text" v-model="s.name" placeholder="山田 太郎" v-focus></label>
         <label class="field"><span>メールアドレス（任意）</span><input type="email" v-model="s.email"></label>
         <label class="field"><span>グループ（任意。カンマ区切り。グループでの共有を試すとき）</span><input type="text" v-model="s.groups" placeholder="営業部, 開発部"></label>
         <label class="row small"><input type="checkbox" v-model="s.admin"> 管理者としてログイン</label>

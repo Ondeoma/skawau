@@ -8,20 +8,20 @@ import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 // 移動・コピー先のフォルダを選ぶダイアログ（Store.moveReq）. 自分のファイルと、編集できる共有されたフォルダをたどれる.
 case class State(folder: RV[Option[FolderDto]] = RV(None),
                  shared: RV[Option[List[NodeHitDto]]] = RV(None),
-                 busy: RV[Boolean] = RV(false))
+                 move: ActionState)
 
-def initState() = State()
+def initState() = State(move = useAction())
 
 def req: Option[MoveReqUi] = Store.moveReq.v
 
 def go(s: State, id: Option[UUID]): Unit = {
   s.shared := None
-  Store.report(id.fold(Api.root())(Api.folder))(f => s.folder := Some(f))
+  Toasts.report(id.fold(Api.root())(Api.folder))(f => s.folder := Some(f))
 }
 
 def showShared(s: State): Unit = {
   s.folder := None
-  Store.report(Api.sharedWithMe())(hs => s.shared := Some(hs.filter(h => h.node.isDir && Perm.canEdit(h.node.perm))))
+  Toasts.report(Api.sharedWithMe())(hs => s.shared := Some(hs.filter(h => h.node.isDir && Perm.canEdit(h.node.perm))))
 }
 
 def mounted(s: State): Unit = go(s, req.flatMap(_.from))
@@ -34,7 +34,7 @@ def folders(s: State) = s.folder.mapC(_.toList.flatMap(_.items.filter(n => n.isD
 def crumbs(s: State) = s.folder.mapC(_.toList.flatMap(_.path))
 def crumbName(c: Crumb): String = if (c.name.isEmpty) "すべてのファイル" else c.name
 def target(s: State) = s.folder.mapC(_.map(_.folder))
-def canDrop(s: State) = computed { s.folder.v.exists(f => Perm.canEdit(f.folder.perm) && !moving.contains(f.folder.id)) && !s.busy.v }
+def canDrop(s: State) = computed { s.folder.v.exists(f => Perm.canEdit(f.folder.perm) && !moving.contains(f.folder.id)) && !s.move.busy.v }
 def inShared(s: State) = s.shared.mapC(_.isDefined)
 def inShare(s: State) = s.folder.mapC(_.exists(_.inShare))
 def title = Store.moveReq.mapC(_.map(r => s"${if (r.items.size == 1) s"「${r.items.head.name}」" else s"${r.items.size}件"}を${if (r.copy) "コピー" else "移動"}").getOrElse(""))
@@ -42,9 +42,7 @@ def okLabel = Store.moveReq.mapC(r => if (r.exists(_.copy)) "ここにコピー"
 
 def run(s: State, conflict: Option[String]): Unit = (req, s.folder.v) match {
   case (Some(r), Some(f)) =>
-    s.busy := true
-    Api.transfer(r.items.map(_.id), f.folder.id, r.copy, conflict).onComplete { res =>
-      s.busy := false
+    s.move.run(Api.transfer(r.items.map(_.id), f.folder.id, r.copy, conflict)).onComplete { res =>
       res match {
         case scala.util.Success(b) if b.errors.nonEmpty && conflict.isEmpty && b.errors.exists(_.contains("移動先に")) =>
           Dialog.choose("移動先に同じ名前のものがあります。", List("rename" -> "両方残す（名前に番号を付ける）", "overwrite" -> "上書きする（移動先にあったものはごみ箱へ）"), "続ける") { c =>
@@ -53,10 +51,10 @@ def run(s: State, conflict: Option[String]): Unit = (req, s.folder.v) match {
           if (b.done.nonEmpty) Store.changed()
         case scala.util.Success(b) =>
           if (b.errors.nonEmpty) Dialog.alert("できなかったもの:\n" + b.errors.mkString("\n"))
-          else Store.toast(s"${b.done.size}件を${if (r.copy) "コピー" else "移動"}しました", Some(s"/files/${f.folder.id}"))
+          else Toasts.show(s"${b.done.size}件を${if (r.copy) "コピー" else "移動"}しました", Some(s"/files/${f.folder.id}"))
           close()
           Store.changed()
-        case scala.util.Failure(e) => Store.error(e)
+        case scala.util.Failure(e) => Toasts.error(e)
       }
     }
   case _ => ()

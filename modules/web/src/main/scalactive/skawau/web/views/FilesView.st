@@ -97,20 +97,20 @@ def zoneLeave(s: State, e: dom.Event): Unit = {
 
 def zoneDrop(s: State, e: dom.Event): Unit = {
   s.over := false
-  if (canEdit(s).v) Uploads.dropped(e).foreach(f => folderId(s).foreach(id => Store.report(f)(upload(s, id, _))))
+  if (canEdit(s).v) Uploads.dropped(e).foreach(f => folderId(s).foreach(id => Toasts.report(f)(upload(s, id, _))))
 }
 
 /** フォルダ（行・パンくず）に落としたとき: 一覧の中のものなら移動、ファイルならそのフォルダへアップロード. */
 def dropOn(s: State, target: UUID, e: dom.Event): Unit = {
   val ids = Drag.ids(e).filterNot(_ == target)
   if (ids.nonEmpty)
-    Store.report(Api.transfer(ids, target, copy = false, None)) { r =>
+    Toasts.report(Api.transfer(ids, target, copy = false, None)) { r =>
       if (r.errors.nonEmpty) Dialog.alert("移動できなかったもの:\n" + r.errors.mkString("\n"))
-      else Store.toast(s"${r.done.size}件を移動しました")
+      else Toasts.show(s"${r.done.size}件を移動しました")
       s.selected := Set.empty
       Store.changed()
     }
-  else Uploads.dropped(e).foreach(f => Store.report(f)(upload(s, target, _)))
+  else Uploads.dropped(e).foreach(f => Toasts.report(f)(upload(s, target, _)))
 }
 
 def dropFn(s: State): Option[(NodeDto, dom.Event) => Unit] = Some((n: NodeDto, e: dom.Event) => dropOn(s, n.id, e))

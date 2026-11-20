@@ -3,13 +3,8 @@ import skawau.web.*
 import org.scalajs.dom
 import skawau.shared.*
 
-import scala.scalajs.js
 
 // プレビュー（Store.preview）: 同じフォルダの画像・動画・PDF・テキストを ← → で送れる.
-case class State(keys: RV[Option[js.Function1[dom.KeyboardEvent, Unit]]] = RV(None))
-
-def initState() = State()
-
 def close(): Unit = Store.preview := None
 
 def step(d: Int): Unit = Store.preview.v.foreach { p =>
@@ -17,17 +12,15 @@ def step(d: Int): Unit = Store.preview.v.foreach { p =>
   if (i >= 0 && i < p.items.size) Store.preview := Some(p.copy(index = i))
 }
 
-def mounted(s: State): Unit = {
-  val f: js.Function1[dom.KeyboardEvent, Unit] = (e: dom.KeyboardEvent) => {
+def mounted(): Unit = {
+  // 片付けると自動で外れる
+  useEventListener[dom.KeyboardEvent](dom.window, "keydown") { e =>
     val typing = Option(dom.document.activeElement).exists(a => a.tagName == "TEXTAREA" || a.tagName == "INPUT")
     if (!typing && e.key == "ArrowLeft") step(-1)
     else if (!typing && e.key == "ArrowRight") step(1)
   }
-  dom.window.addEventListener("keydown", f)
-  s.keys := Some(f)
+  ()
 }
-
-def unmounted(s: State): Unit = s.keys.v.foreach(f => dom.window.removeEventListener("keydown", f))
 
 /** 表示中のファイル（v-for の key で、ファイルが変わったら中身の部品を作り直す）. */
 def currentList = Store.preview.mapC(_.toList.map(_.current))
@@ -39,7 +32,7 @@ def hasNext = Store.preview.mapC(_.exists(p => p.index < p.items.size - 1))
 
 def download(): Unit = Store.preview.v.foreach { p =>
   val n = p.current
-  Api.download(p.token.fold(Api.contentUrl(n.id, download = true))(t => Api.publicContentUrl(t, n.id, download = true)))
+  Dom.downloadUrl(p.token.fold(Api.contentUrl(n.id, download = true))(t => Api.publicContentUrl(t, n.id, download = true)), "")
 }
 </script>
 

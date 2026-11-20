@@ -23,8 +23,6 @@ object Fmt {
     isoDate(dt)
   }
 
-  def initials(name: String): String = name.trim.take(1)
-
   /** 容量の表示（「1.2 GB / 10 GB」）. */
   def quota(q: QuotaDto): String = q.limit.fold(s"${bytes(q.used)} 使用中")(l => s"${bytes(q.used)} / ${bytes(l)}")
 

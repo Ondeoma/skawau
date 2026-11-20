@@ -103,17 +103,13 @@ object Uploads {
     } else Future.successful(Nil)
 
   /** input type=file（webkitdirectory ならフォルダ）の change で選ばれたもの（同じファイルを選び直せるよう、入力欄は空にする）. */
-  def picked(e: dom.Event): List[(dom.File, String)] = {
-    val input = e.target.asInstanceOf[dom.HTMLInputElement]
-    val files = Option(input.files).toList.flatMap(fs => (0 until fs.length).map(fs(_))).map { f =>
+  def picked(e: dom.Event): List[(dom.File, String)] =
+    Dom.takeFiles(e).map { f =>
       val rel = Option(
         f.asInstanceOf[js.Dynamic].webkitRelativePath.asInstanceOf[js.UndefOr[String]]
       ).flatMap(_.toOption).getOrElse("")
       (f, rel.split('/').dropRight(1).mkString("/"))
     }
-    input.value = ""
-    files
-  }
 
   /** ドロップされたもの（ブラウザの外からのファイルのときだけ. 既定の動きは止める）. */
   def dropped(e: dom.Event): Option[Future[List[(dom.File, String)]]] =

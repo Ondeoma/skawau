@@ -1,23 +1,26 @@
 <script lang="scala">
 import skawau.web.*
-import org.scalajs.dom
 import skawau.shared.*
 
 import java.util.UUID
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 
 // 共有のダイアログ（Store.shareFor のファイル・フォルダ）: ユーザー・グループへの共有と、公開リンク.
-case class State(shares: RV[List[ShareDto]] = RV(Nil),
+case class State(found: RV[ShareeDto],
+                 find: DebouncedFn[String],
+                 shares: RV[List[ShareDto]] = RV(Nil),
                  q: RV[String] = RV(""),
-                 found: RV[ShareeDto] = RV(ShareeDto(Nil, Nil)),
-                 perm: RV[String] = RV(Perm.View),
-                 timer: RV[Option[Int]] = RV(None))
+                 perm: RV[String] = RV(Perm.View))
 
-def initState() = State()
+def initState() = {
+  val found = RV(ShareeDto(Nil, Nil))
+  // 入力が止まってから探す
+  State(found, useDebounce[String](250)(q => Api.sharees(q).foreach(found := _)))
+}
 
 def node: Option[NodeDto] = Store.shareFor.v
 
-def load(s: State): Unit = node.foreach(n => Store.report(Api.shares(n.id))(s.shares := _))
+def load(s: State): Unit = node.foreach(n => Toasts.report(Api.shares(n.id))(s.shares := _))
 
 def mounted(s: State): Unit = { load(s); search(s, "") }
 
@@ -25,8 +28,7 @@ def close(): Unit = { Store.shareFor := None; Store.changed() }
 
 def search(s: State, q: String): Unit = {
   s.q := q
-  s.timer.v.foreach(dom.window.clearTimeout)
-  s.timer := Some(dom.window.setTimeout(() => Api.sharees(q).foreach(s.found := _), 250))
+  s.find(q)
 }
 
 def people(s: State) = s.shares.mapC(_.filter(_.kind != ShareKind.Link))
@@ -36,11 +38,11 @@ def users(s: State) = computed { val t = taken(s).v; s.found.v.users.filterNot(u
 def groups(s: State) = computed { val t = taken(s).v; s.found.v.groups.filterNot(g => t.contains(g.id)) }
 
 def add(s: State, kind: String, user: Option[UUID], group: Option[UUID]): Unit = node.foreach { n =>
-  Store.report(Api.createShare(n.id, CreateShareReq(kind, user, group, s.perm.v, None, None, None))) { _ => load(s); Store.changed() }
+  Toasts.report(Api.createShare(n.id, CreateShareReq(kind, user, group, s.perm.v, None, None, None))) { _ => load(s); Store.changed() }
 }
 
 def createLink(s: State): Unit = node.foreach { n =>
-  Store.report(Api.createShare(n.id, CreateShareReq(ShareKind.Link, None, None, Perm.View, None, None, None))) { sh =>
+  Toasts.report(Api.createShare(n.id, CreateShareReq(ShareKind.Link, None, None, Perm.View, None, None, None))) { sh =>
     sh.url.foreach(u => Dom.copy(u, "公開リンクを作成し、コピーしました"))
     load(s)
     Store.changed()
@@ -48,11 +50,11 @@ def createLink(s: State): Unit = node.foreach { n =>
 }
 
 def update(s: State, sh: ShareDto, r: UpdateShareReq, msg: String = ""): Unit =
-  Store.report(Api.updateShare(sh.id, r)) { _ => if (msg.nonEmpty) Store.toast(msg); load(s) }
+  Toasts.report(Api.updateShare(sh.id, r)) { _ => if (msg.nonEmpty) Toasts.show(msg); load(s) }
 
 def remove(s: State, sh: ShareDto): Unit = {
   val what = if (sh.kind == ShareKind.Link) "この公開リンクを削除しますか？（リンクを知っている人も開けなくなります）" else "共有を解除しますか？"
-  Dialog.confirm(what, "解除する") { Store.report(Api.deleteShare(sh.id)) { _ => load(s); Store.changed() } }
+  Dialog.confirm(what, "解除する") { Toasts.report(Api.deleteShare(sh.id)) { _ => load(s); Store.changed() } }
 }
 
 def setPassword(s: State, sh: ShareDto): Unit =
@@ -91,7 +93,7 @@ def newPermChip(s: State, v: String) = Ui.active(s.perm, v, "chip")
     <p class="muted small">{{ permHelp }}</p>
     <div class="found">
       <button v-for="u in users(s)" :key="u.id" class="cand" @click="add(s, ShareKind.User, Some(u.id), None)">
-        <Avatar :user="Some(u)" :size="22" /> {{ u.name }} <span class="muted">＋</span>
+        <Avatar :user="Some(u.person)" :size="22" /> {{ u.name }} <span class="muted">＋</span>
       </button>
       <button v-for="g in groups(s)" :key="g.id" class="cand" @click="add(s, ShareKind.Group, None, Some(g.id))">
         👥 {{ g.name }} <span class="muted small">{{ g.members }}人</span> <span class="muted">＋</span>

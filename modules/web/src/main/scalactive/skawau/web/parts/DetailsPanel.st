@@ -54,7 +54,7 @@ def facts(props: Props) = props.node.mapC(_.toList.flatMap { x =>
 
 def restore(props: Props, v: VersionDto): Unit = props.node.v.foreach { x =>
   Dialog.confirm(s"版 ${v.version}（${Fmt.dateTime(v.createdAt)}）に戻しますか？\n今の内容は新しい版として残ります。", "この版に戻す", danger = false) {
-    Store.report(Api.restoreVersion(x.id, v.id)) { _ => Store.toast(s"版 ${v.version} に戻しました"); Store.changed() }
+    Toasts.report(Api.restoreVersion(x.id, v.id)) { _ => Toasts.show(s"版 ${v.version} に戻しました"); Store.changed() }
   }
 }
 

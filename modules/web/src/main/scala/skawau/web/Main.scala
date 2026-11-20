@@ -17,6 +17,8 @@ object Main {
     AppNames.init("skawau")
     Store.startSync()
     Theme.apply()
+    // お知らせは 5 秒（エラーは 9 秒）で消す
+    Toasts.duration = 5000
     // skorimako のブラウザの観測（設定があるときだけ）と、PWA（ホーム画面に追加・オフラインで開く・プッシュ通知）
     Observe.start()
     Pwa.register()

@@ -5,12 +5,8 @@ import org.scalajs.dom
 import skawau.shared.*
 
 import java.util.UUID
-import scala.concurrent.Future
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
-import scala.util.{Failure, Success}
-
-final case class Toast(id: Int, text: String, link: Option[String], error: Boolean)
 
 /** プレビューで開いているファイル（同じフォルダの中で前後に送れる）. token は公開リンクで開いたとき. */
 final case class PreviewReq(items: List[NodeDto], index: Int, token: Option[String] = None) {
@@ -26,7 +22,6 @@ object Store {
   val me: RV[Option[MeDto]] = RV(None)
   val config: RV[Option[ClientConfigDto]] = RV(None)
   val unread: RV[UnreadDto] = RV(UnreadDto(0))
-  val toasts: RV[List[Toast]] = RV(Nil)
 
   /** ファイルに変更があるたびに増える. 各画面はこれを監視して表示を取り直す. */
   val tick: RV[Int] = RV(0)
@@ -39,35 +34,14 @@ object Store {
   /** 左のメニュー（狭い画面で開閉する）. */
   val sideOpen: RV[Boolean] = RV(false)
 
-  private var toastSeq = 0
-
   def myId: Option[UUID] = me.v.map(_.id)
   def isAdmin = me.mapC(_.exists(_.isAdmin))
   def office: Option[OfficeInfoDto] = config.v.flatMap(_.office)
 
-  // ---------------------------------------------------------------- トースト
-
-  def toast(text: String, link: Option[String] = None, error: Boolean = false): Unit = {
-    toastSeq += 1
-    val t = Toast(toastSeq, text, link, error)
-    toasts := (toasts.v :+ t).takeRight(5)
-    dom.window.setTimeout(() => dismiss(t.id), if (error) 9000 else 5000)
-  }
-
-  def dismiss(id: Int): Unit = toasts := toasts.v.filterNot(_.id == id)
-
-  def error(e: Throwable): Unit = e match {
-    case ApiError(401, _) => ()
-    case other => toast(other.getMessage, error = true)
-  }
-
-  /** Future の失敗をトーストで知らせる. */
-  def report[A](f: Future[A])(ok: A => Unit): Unit = f.onComplete {
-    case Success(a) => ok(a)
-    case Failure(e) => error(e)
-  }
-
   /** 自分の情報（容量の使用量を含む）を読み直す. */
+  /** 自分（アイコンの表示用. 画面の部品の中で呼ぶこと）. */
+  def mePerson = me.mapC(_.map(m => Person(m.id.toString, m.name, m.avatarUrl)))
+
   def reloadMe(): Unit = Api.me().foreach(m => me := Some(m))
 
   // ---------------------------------------------------------------- 自動同期（SSE）

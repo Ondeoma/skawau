@@ -10,7 +10,7 @@ case class State(items: RV[List[NotificationDto]] = RV(Nil), unread: RV[Boolean]
 
 def initState() = State()
 
-def load(s: State): Unit = Store.report(Api.notifications(s.unread.v))(s.items := _)
+def load(s: State): Unit = Toasts.report(Api.notifications(s.unread.v))(s.items := _)
 
 def mounted(s: State): Unit = {
   pageTitle("通知")
@@ -23,7 +23,7 @@ def open(n: NotificationDto): Unit = {
   n.link.foreach(l => Router.go(l))
 }
 
-def readAll(s: State): Unit = Store.report(Api.markRead(Nil)) { _ => Store.refresh(); load(s) }
+def readAll(s: State): Unit = Toasts.report(Api.markRead(Nil)) { _ => Store.refresh(); load(s) }
 
 def toggle(s: State, on: Boolean): Unit = { s.unread := on; load(s) }
 def chip(s: State, on: Boolean) = Ui.active(s.unread, on, "chip")
@@ -38,7 +38,7 @@ def cls(n: NotificationDto): String = if (n.read) "item" else "item unread"
       <button :class="chip(s, true)" @click="toggle(s, true)">未読</button>
     </div>
     <div v-for="n in s.items" :key="n.id" :class="cls(n)" @click="open(n)">
-      <Avatar :user="n.actor" :size="30" />
+      <Avatar :user="n.actor.map(_.person)" :size="30" />
       <div class="grow"><div>{{ n.title }}</div><div class="muted small">{{ n.body }}・{{ Fmt.ago(n.at) }}</div></div>
     </div>
     <p v-if="s.items.mapC(_.isEmpty)" class="empty">通知はありません</p>

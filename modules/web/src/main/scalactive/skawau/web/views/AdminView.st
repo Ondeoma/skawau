@@ -14,15 +14,15 @@ case class State(tab: RV[String] = RV("users"),
 def initState() = State()
 
 def load(s: State): Unit = {
-  Store.report(Api.adminUsers(s.q.v))(s.users := _)
-  Store.report(Api.stats())(x => s.stats := Some(x))
-  Store.report(Api.audit())(s.audit := _)
+  Toasts.report(Api.adminUsers(s.q.v))(s.users := _)
+  Toasts.report(Api.stats())(x => s.stats := Some(x))
+  Toasts.report(Api.audit())(s.audit := _)
 }
 
 def mounted(s: State): Unit = { pageTitle("管理"); load(s) }
 
 def update(s: State, u: AdminUserDto, r: UpdateUserReq): Unit =
-  Store.report(Api.updateUser(u.id, r))(_ => load(s))
+  Toasts.report(Api.updateUser(u.id, r))(_ => load(s))
 
 def setQuota(s: State, u: AdminUserDto): Unit =
   Dialog.prompt(s"${u.name} さんの容量の上限（GB。空にすると既定の上限）", u.quota.fold("")(q => f"${q / 1024.0 / 1024 / 1024}%.1f"), "保存") { v =>
@@ -56,7 +56,7 @@ def facts(s: State) = s.stats.mapC(_.toList.flatMap(x => List(
           <thead><tr><th>名前</th><th class="hide-sp">メール</th><th class="hide-sp">グループ</th><th>使用量</th><th class="hide-sp">最終ログイン</th><th>管理者</th><th>無効</th></tr></thead>
           <tbody>
             <tr v-for="u in s.users" :key="u.id">
-              <td><Avatar :user="Some(UserBrief(u.id, u.name, u.avatarUrl))" :size="22" /> {{ u.name }}</td>
+              <td><Avatar :user="Some(Person(u.id.toString, u.name, u.avatarUrl))" :size="22" /> {{ u.name }}</td>
               <td class="small hide-sp">{{ u.email.getOrElse("") }}</td>
               <td class="small hide-sp">{{ u.groups.mkString(", ") }}</td>
               <td class="small nowrap">{{ usage(u) }} <button class="ghost small" title="容量の上限" @click="setQuota(s, u)">✏️</button></td>

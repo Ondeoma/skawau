@@ -7,7 +7,7 @@ case class State(items: RV[List[TrashItemDto]] = RV(Nil), loaded: RV[Boolean] = 
 
 def initState() = State()
 
-def load(s: State): Unit = Store.report(Api.trashList()) { xs => s.items := xs; s.loaded := true }
+def load(s: State): Unit = Toasts.report(Api.trashList()) { xs => s.items := xs; s.loaded := true }
 
 def mounted(s: State): Unit = {
   pageTitle("ごみ箱")
@@ -16,16 +16,16 @@ def mounted(s: State): Unit = {
 }
 
 def restore(t: TrashItemDto): Unit =
-  Store.report(Api.restoreTrash(t.id)) { _ => Store.toast(s"「${t.name}」を元に戻しました"); Store.changed() }
+  Toasts.report(Api.restoreTrash(t.id)) { _ => Toasts.show(s"「${t.name}」を元に戻しました"); Store.changed() }
 
 def purge(t: TrashItemDto): Unit =
   Dialog.confirm(s"「${t.name}」を完全に削除しますか？元に戻せません。", "完全に削除") {
-    Store.report(Api.purgeTrash(t.id)) { _ => Store.changed() }
+    Toasts.report(Api.purgeTrash(t.id)) { _ => Store.changed() }
   }
 
 def empty(): Unit =
   Dialog.confirm("ごみ箱を空にしますか？中のものはすべて完全に削除され、元に戻せません。", "ごみ箱を空にする") {
-    Store.report(Api.emptyTrash()) { _ => Store.toast("ごみ箱を空にしました"); Store.changed() }
+    Toasts.report(Api.emptyTrash()) { _ => Toasts.show("ごみ箱を空にしました"); Store.changed() }
   }
 
 def icon(t: TrashItemDto): String = FileKind.icon(FileKind.kind(t.name, t.isDir))

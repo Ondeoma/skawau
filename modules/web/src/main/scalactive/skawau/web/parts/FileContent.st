@@ -47,11 +47,11 @@ def save(s: State, props: Props): Unit = {
       s.text := Some(s.draft.v)
       s.version := n.version
       s.editing := false
-      Store.toast("保存しました")
+      Toasts.show("保存しました")
       Store.changed()
     case Failure(e) =>
       s.saving := false
-      Store.error(e)
+      Toasts.error(e)
   }
 }
 

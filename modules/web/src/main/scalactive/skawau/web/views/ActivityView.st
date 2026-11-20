@@ -8,10 +8,10 @@ case class State(events: RV[List[EventDto]] = RV(Nil), more: RV[Boolean] = RV(fa
 
 def initState() = State()
 
-def load(s: State): Unit = Store.report(Api.activity(None, 100)) { es => s.events := es; s.more := es.size == 100 }
+def load(s: State): Unit = Toasts.report(Api.activity(None, 100)) { es => s.events := es; s.more := es.size == 100 }
 
 def loadMore(s: State): Unit = s.events.v.lastOption.foreach { last =>
-  Store.report(Api.activity(Some(last.id), 100)) { es => s.events := s.events.v ++ es; s.more := es.size == 100 }
+  Toasts.report(Api.activity(Some(last.id), 100)) { es => s.events := s.events.v ++ es; s.more := es.size == 100 }
 }
 
 def mounted(s: State): Unit = {
@@ -60,7 +60,7 @@ def openEvent(e: EventDto): Unit = if (!gone(e)) Router.go(s"/view/${e.nodeId}")
     </div>
     <div class="feed">
       <div v-for="e in filtered(s)" :key="e.id" class="ev">
-        <Avatar :user="e.actor" :size="30" />
+        <Avatar :user="e.actor.map(_.person)" :size="30" />
         <div class="grow">
           <div><b>{{ who(e) }}</b> さんが <span class="clickable" @click="openEvent(e)">{{ icon(e) }} {{ e.name }}</span> を{{ EventKind.label(e.kind) }}しました
             <span class="muted small">{{ from(e) }}</span></div>
