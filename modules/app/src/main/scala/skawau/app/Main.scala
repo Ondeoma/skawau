@@ -1,21 +1,19 @@
 package skawau.app
 
+import sbirds.db.*
 import cats.effect.*
 import cats.syntax.all.*
 import com.comcast.ip4s.*
 import doobie.implicits.*
-import fs2.io.file.Path
 import org.http4s.*
-import org.http4s.dsl.io.*
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
-import org.http4s.server.staticcontent.*
 import skawau.api.*
 import sbirds.auth.{OidcClient, OidcConfig}
 import skawau.core.Actor
 import skawau.db.*
 import sbirds.observe.{HttpClientTelemetry, HttpTelemetry, Metrics, RumRoutes, Telemetry}
-import sbirds.http.Errors
+import sbirds.http.{Errors, Health, RateLimit, RateLimitConfig, SecurityHeaders, Spa}
 import sbirds.observe.Log
 import skawau.core.ErrorCode
 import sbirds.storage.S3Config
@@ -45,6 +43,8 @@ object Main extends IOApp.Simple {
   def run: IO[Unit] =
     for {
       cfg <- Config.load
+      // IP ごとの回数の制限（RATE_LIMIT_AUTH・RATE_LIMIT_PUBLIC・TRUSTED_PROXIES）
+      rate <- IO.fromEither(RateLimitConfig.fromEnv().left.map(new IllegalArgumentException(_)))
       n <- migrateWithRetry(cfg)
       _ <- sbirds.observe.Log.println(s"[skawau] database migrated ($n migration(s) applied); node ${cfg.nodeId}")
       _ <- (for {
@@ -79,7 +79,13 @@ object Main extends IOApp.Simple {
         )
         _ <- loops.traverse_(_.background)
         rest =
-          healthRoutes(xa, cfg.nodeId) <+>
+          // ロードバランサー用のヘルスチェック。DB（プライマリ）に書けない状態なら 503
+          Health.routes(
+            Database.isPrimary(xa),
+            s"ok ${cfg.nodeId}",
+            e => Log.report(ErrorCode.HealthCheckFailed, "", e),
+            errorDetail = true
+          ) <+>
             new AuthRoutes(oidc, users, activity, office, sess, cfg.api).routes <+>
             new UserRoutes(users, nodes, activity, files, blobs, sess).routes <+>
             new OfficeRoutes(office, files, nodes, shares, sess).routes <+>
@@ -91,8 +97,11 @@ object Main extends IOApp.Simple {
             RumRoutes.routes <+>
             new PushRoutes(pushStore, push, sess).routes
         // MCP のツールは REST API を内部で呼ぶ
-        all = rest <+> new McpRoutes(rest, sess, cfg.api.publicUrl).routes
-        app = securityHeaders(cfg.staticDir.fold(all)(d => all <+> spa(d)))
+        all = rateLimited(rest <+> new McpRoutes(rest, sess, cfg.api.publicUrl).routes, rate)
+        // ビルド済みの画面の配信。存在しないパスは index.html（SPA）
+        app = SecurityHeaders(headerPolicy)(cfg.staticDir.fold(all)(d =>
+          all <+> Spa.routes(d, Spa.startsWith("api", "auth", "dav", "onlyoffice", "oauth", "mcp", "healthz"))
+        ))
         // バックエンドの要求をトレース・メトリクス・アクセスログにする（画面のファイル・/healthz は除く）
         httpApp <- HttpTelemetry(
           Errors.handle(app.orNotFound, ErrorCode.Unexpected),
@@ -117,20 +126,6 @@ object Main extends IOApp.Simple {
         Log.report(ErrorCode.DatabaseNotReady, s"${e.getMessage.take(120)}; retry $attempt/60") *>
           IO.sleep(2.seconds) *> migrateWithRetry(cfg, attempt + 1)
     }
-
-  /** ロードバランサー用のヘルスチェック。DB（プライマリ）に書けない状態なら 503。 */
-  private def healthRoutes(xa: doobie.Transactor[IO], node: String): HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case GET -> Root / "healthz" =>
-      sql"select not pg_is_in_recovery()".query[Boolean].unique.transact(xa).timeout(3.seconds).attempt.flatMap {
-        case Right(true) => text(Status.Ok, s"ok $node")
-        case Right(false) => text(Status.ServiceUnavailable, "database is read-only (not primary)")
-        case Left(e) => Log.report(ErrorCode.HealthCheckFailed, "", e) *>
-            text(Status.ServiceUnavailable, s"database unavailable: ${e.getMessage}")
-      }
-  }
-
-  private def text(status: Status, body: String): IO[Response[IO]] =
-    IO.pure(Response[IO](status).withEntity(body)(using EntityEncoder.stringEncoder))
 
   private def blobStore(cfg: AppConfig): Resource[IO, Option[skawau.storage.BlobStore]] = cfg.s3 match {
     case Some(c) => S3BlobStore.resource(c).evalTap(_.ensureBucket).map(Some(_))
@@ -194,31 +189,21 @@ object Main extends IOApp.Simple {
    * すべての応答に付けるセキュリティのヘッダー（個別に付けたものはそのまま）。
    * 画面を他のサイトの iframe に埋め込ませない（クリックジャッキング）。PDF のプレビューは同じオリジンの iframe なので SAMEORIGIN。
    */
-  private def securityHeaders(routes: HttpRoutes[IO]): HttpRoutes[IO] = routes.map { r =>
-    def absent(n: String) = r.headers.get(org.typelevel.ci.CIString(n)).isEmpty
-    val hs = List(
-      "X-Content-Type-Options" -> "nosniff",
-      "X-Frame-Options" -> "SAMEORIGIN",
-      "Referrer-Policy" -> "same-origin",
-      "Content-Security-Policy" -> "frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
-    ).filter((n, _) => absent(n))
-    r.putHeaders(hs.map(h => h: Header.ToRaw)*)
-  }
+  /**
+   * IP ごとの回数の制限（1分あたり・ノードごと。0 なら制限しない）。数え方は全サービス共通（sbirds.http.RateLimit.standard）:
+   * ログイン（/auth/…）と OAuth の認可の画面（/oauth/authorize）を RATE_LIMIT_AUTH（既定 20）、
+   * OAuth のトークンの発行・失効（/oauth/token・/oauth/revoke）と公開の API（/api/public/…）を RATE_LIMIT_PUBLIC（既定 120）で数える。
+   * 公開リンクへのアップロードは 1 ファイルにつき 1 要求（フォルダごと送ると 1 分に 120 件を超える）なので数えない。
+   */
+  private def rateLimited(routes: HttpRoutes[IO], cfg: RateLimitConfig): HttpRoutes[IO] =
+    RateLimit.standard(routes, cfg, ErrorCode.TooManyRequests)(b => {
+      case RateLimit.Path("api" :: "public" :: _ :: "upload" :: Nil) => b.skip
+    })
 
-  /** ビルド済みの画面の配信。存在しないパスは index.html（SPA）。 */
-  private def spa(dir: String): HttpRoutes[IO] = {
-    val files = fileService[IO](org.http4s.server.staticcontent.FileService.Config(dir))
-    val index = HttpRoutes.of[IO] {
-      case req @ GET -> _
-          if !Set("api", "auth", "dav", "onlyoffice", "oauth", "mcp", "healthz").exists(p =>
-            req.pathInfo.renderString.startsWith("/" + p)
-          ) =>
-        StaticFile.fromPath(Path(dir) / "index.html", Some(req)).getOrElseF(NotFound())
-    }
-    HttpRoutes[IO] { req =>
-      val cc =
-        if req.pathInfo.renderString.startsWith("/assets/") then "public, max-age=31536000, immutable" else "no-cache"
-      (files <+> index).run(req).map(_.putHeaders("Cache-Control" -> cc))
-    }
-  }
+  private val headerPolicy = SecurityHeaders.Policy(
+    frameOptions = Some("SAMEORIGIN"),
+    referrer = Some("same-origin"),
+    csp = Some("frame-ancestors 'self'; base-uri 'self'; object-src 'none'"),
+    keepExisting = true
+  )
 }

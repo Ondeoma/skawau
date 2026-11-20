@@ -2,6 +2,8 @@
 export DATABASE_URL=jdbc:postgresql://localhost:54340/skawau DATABASE_USER=skawau DATABASE_PASSWORD=skawau
 export PUBLIC_URL=http://localhost:8092 HTTP_PORT=8092
 export DEV_LOGIN=true
+# 回数の制限（IP ごとの1分あたり）。手元ではすべての要求が 127.0.0.1 から来るので、開発中は緩める
+export RATE_LIMIT_AUTH=${RATE_LIMIT_AUTH:-300} RATE_LIMIT_PUBLIC=${RATE_LIMIT_PUBLIC:-1000}
 export S3_ENDPOINT=http://localhost:3911 S3_BUCKET=skawau S3_ACCESS_KEY=skawau S3_SECRET_KEY=skawauskawauskawau
 # ONLYOFFICE: ブラウザとこのサーバーからは localhost:8093、Document Server からこのサーバーへは host.docker.internal:8092
 export ONLYOFFICE_URL=http://localhost:8093 ONLYOFFICE_APP_URL=http://host.docker.internal:8092

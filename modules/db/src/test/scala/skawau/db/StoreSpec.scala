@@ -1,5 +1,6 @@
 package skawau.db
 
+import sbirds.db.*
 import sbirds.shared.AppError
 import cats.effect.*
 import cats.syntax.all.*

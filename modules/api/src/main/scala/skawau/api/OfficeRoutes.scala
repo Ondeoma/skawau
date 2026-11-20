@@ -45,6 +45,8 @@ final class OfficeRoutes(office: OfficeService,
   private def getOnlyofficeDownload(req: Request[IO], id: UUID): IO[Response[IO]] =
     office.checkUrl(param(req, "t"), id) match {
       case Left(e) => err(ErrorCode.OfficeTokenInvalid, e)
+      // 保存の知らせ用の URL の署名（期限が長く、閲覧だけの人にも渡る）では文書を取らせない
+      case Right(t) if t.hcursor.downField("edit").succeeded => err(ErrorCode.OfficeTokenInvalid, "用途が違います")
       case Right(_) => nodes.find(id).flatMap {
           case Some(n) if !n.isDir => Serve.node(req, files, n, download = true, "office")
           case _ => err(ErrorCode.FileNotFound)
@@ -55,7 +57,7 @@ final class OfficeRoutes(office: OfficeService,
     office.checkUrl(param(req, "t"), id) match {
       case Left(e) => dsReply(1, e).map(_.withStatus(Status.Forbidden))
       case Right(t) =>
-        req.as[Json].attempt.flatMap {
+        BodyLimit(req).as[Json].attempt.flatMap {
           case Left(_) => dsReply(1).map(_.withStatus(Status.BadRequest))
           case Right(raw) =>
             office.callbackBody(req, raw) match {

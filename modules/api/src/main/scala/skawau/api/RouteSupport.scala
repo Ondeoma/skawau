@@ -4,17 +4,18 @@ import cats.effect.*
 import io.circe.Decoder
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
-import org.http4s.dsl.Http4sDsl
 import skawau.core.*
-import sbirds.http.Errors
+import sbirds.http.{Errors, RouteHelpers}
 import sbirds.shared.AppError
 
 import java.util.UUID
 
 /**
- * *Routes に共通の補助（エラー応答・認証・リクエスト本文・パラメータ）。
+ * *Routes に共通の補助（エラー応答・認証・リクエスト本文・パラメータ）。クエリ・パスの UUID・302 は sbirds.http.RouteHelpers。
  */
-trait RouteSupport extends Http4sDsl[IO] {
+trait RouteSupport extends RouteHelpers {
+
+  protected def bodyInvalid: sbirds.shared.ErrorCode = ErrorCode.RequestBodyInvalid
   protected def sessions: SessionAuth
 
   /** エラーの応答（コード付きでログに出る）. detail を省くとコードの既定の文言. */
@@ -57,20 +58,13 @@ trait RouteSupport extends Http4sDsl[IO] {
   protected def sessionOnly(req: Request[IO])(f: AuthSession => IO[Response[IO]]): IO[Response[IO]] =
     authed(req)(s => if s.isSession then f(s) else err(ErrorCode.SessionOnly))
 
-  protected def body[A: Decoder](req: Request[IO])(f: A => IO[Response[IO]]): IO[Response[IO]] =
-    req.as[A].attempt.flatMap {
+  // 本文の上限を掛けてから読む（超えたら 413）ので、RouteHelpers のものは使わない
+  override protected def body[A: Decoder](req: Request[IO])(f: A => IO[Response[IO]]): IO[Response[IO]] =
+    BodyLimit(req).as[A].attempt.flatMap {
+      case Left(_: BodyLimit.TooLarge) => err(ErrorCode.RequestTooLarge)
       case Left(e) => err(ErrorCode.RequestBodyInvalid, s"リクエストの内容が正しくありません: ${e.getMessage.take(200)}")
       case Right(b) => f(b)
     }
-
-  protected object UuidVar {
-    def unapply(s: String): Option[UUID] = uuidOpt(s)
-  }
-
-  protected def param(req: Request[IO], k: String): Option[String] = req.params.get(k).map(_.trim).filter(_.nonEmpty)
-
-  protected def intParam(req: Request[IO], k: String, default: Int, max: Int): Int =
-    param(req, k).flatMap(_.toIntOption).map(v => math.max(1, math.min(v, max))).getOrElse(default)
 
   protected def boolParam(req: Request[IO], k: String): Boolean =
     param(req, k).exists(v => v == "1" || v.equalsIgnoreCase("true"))

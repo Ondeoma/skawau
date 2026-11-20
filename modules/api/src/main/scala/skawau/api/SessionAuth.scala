@@ -4,6 +4,7 @@ import cats.effect.*
 import org.http4s.*
 import org.http4s.headers.Authorization
 import sbirds.auth.Crypto
+import sbirds.http.{Csrf, HttpParts, SessionCookie}
 import skawau.auth.ApiKeys
 import skawau.core.*
 import skawau.db.*
@@ -13,6 +14,8 @@ import java.util.UUID
 
 /** 認証: Cookie のセッション、`Authorization: Bearer <APIキー>`、WebDAV は Basic（パスワードに APIキー）。 */
 final class SessionAuth(users: UserStore, cfg: ApiConfig) {
+
+  private val cookie = new SessionCookie(cfg.cookieName, cfg.cookieSecure, cfg.sessionTtl)
 
   private def isAdmin(u: User, gs: List[Group]) = u.isAdmin || gs.exists(g => cfg.adminGroups.contains(g.name))
 
@@ -34,11 +37,10 @@ final class SessionAuth(users: UserStore, cfg: ApiConfig) {
             req.headers.get(org.typelevel.ci.CIString(McpHeader)).isDefined
         )
       case None =>
-        req.cookies.find(_.name == cfg.cookieName).map(_.content) match {
+        cookie.hash(req) match {
           case None => IO.pure(None)
-          case Some(token) => users.findSession(Crypto.sha256(token), Instant.now()).map(_.map((u, gs) =>
-              AuthSession(u, gs, isAdmin(u, gs))
-            ))
+          case Some(hash) =>
+            users.findSession(hash, Instant.now()).map(_.map((u, gs) => AuthSession(u, gs, isAdmin(u, gs))))
         }
     }
 
@@ -49,62 +51,25 @@ final class SessionAuth(users: UserStore, cfg: ApiConfig) {
       case _ => bearer(req).fold(IO.pure(None))(byKey(_, dav = true))
     }
 
-  private val publicOrigin =
-    "^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+".r.findFirstIn(cfg.publicUrl).getOrElse(cfg.publicUrl).toLowerCase
-
   /**
    * この画面から送られた要求か（Cookie のセッションでの更新系の要求に使う CSRF の対策）。
-   * SameSite=Lax の Cookie は同じサイトの別のサブドメインからの送信を防げないため、Sec-Fetch-Site（なければ Origin）で確かめる。
+   * SameSite=Lax の Cookie は同じサイトの別のサブドメインからの送信を防げないため、Sec-Fetch-Site（なければ Origin・Referer）で確かめる。
    */
-  def sameOrigin(req: Request[IO]): Boolean = {
-    def header(n: String) = req.headers.get(org.typelevel.ci.CIString(n)).map(_.head.value)
-    header("Sec-Fetch-Site") match {
-      case Some(v) => v == "same-origin" || v == "none"
-      case None => header("Origin").forall(_.toLowerCase == publicOrigin)
-    }
-  }
+  private val csrf = Csrf.Policy(cfg.publicUrl).copy(trustFetchSite = true, safeMethods = Csrf.SafeWithOptions)
+
+  def sameOrigin(req: Request[IO]): Boolean = Csrf.fromOwnScreen(req, csrf)
 
   def sessionFor(userId: UUID): IO[Option[AuthSession]] =
     users.withGroups(userId).map(_.map((u, gs) => AuthSession(u, gs, isAdmin(u, gs))))
 
-  private def bearer(req: Request[IO]): Option[String] =
-    req.headers.get[Authorization].collect { case Authorization(Credentials.Token(AuthScheme.Bearer, t)) => t }.filter(
-      ApiKeys.looksLike
-    )
+  private def bearer(req: Request[IO]): Option[String] = HttpParts.bearer(req).filter(ApiKeys.looksLike)
 
-  def issue(user: User, idToken: Option[String] = None): IO[ResponseCookie] = {
-    val token = Crypto.randomToken()
-    users.createSession(
-      Crypto.sha256(token),
-      user.id,
-      Instant.now().plusSeconds(cfg.sessionTtl.toSeconds),
-      idToken
-    ).as(cookie(token, cfg.sessionTtl.toSeconds))
-  }
+  def issue(user: User, idToken: Option[String] = None): IO[ResponseCookie] =
+    cookie.issue((hash, expires) => users.createSession(hash, user.id, expires, idToken))
 
   /** sbirds のアプリの表示名（ログインしたときの ID トークンにある. API キーや開発用のログインでは空）. */
-  def appNames(req: Request[IO]): IO[Map[String, String]] =
-    req.cookies.find(_.name == cfg.cookieName) match {
-      case Some(c) =>
-        users.sessionIdToken(Crypto.sha256(c.content)).map(_.fold(Map.empty)(sbirds.auth.AppNames.fromIdToken))
-      case None => IO.pure(Map.empty)
-    }
+  def appNames(req: Request[IO]): IO[Map[String, String]] = cookie.appNames(req)(users.sessionIdToken)
 
   /** セッションを消す. IdP からもログアウトするための id_token（OIDC でログインしていたとき）と、Cookie を消す指示を返す. */
-  def revoke(req: Request[IO]): IO[(Option[String], ResponseCookie)] =
-    req.cookies.find(_.name == cfg.cookieName) match {
-      case Some(c) => users.deleteSession(Crypto.sha256(c.content)).map(_ -> cookie("", 0))
-      case None => IO.pure(None -> cookie("", 0))
-    }
-
-  private def cookie(value: String, maxAge: Long): ResponseCookie =
-    ResponseCookie(
-      cfg.cookieName,
-      value,
-      maxAge = Some(maxAge),
-      path = Some("/"),
-      httpOnly = true,
-      secure = cfg.cookieSecure,
-      sameSite = Some(SameSite.Lax)
-    )
+  def revoke(req: Request[IO]): IO[(Option[String], ResponseCookie)] = cookie.revoke(req)(users.deleteSession)
 }

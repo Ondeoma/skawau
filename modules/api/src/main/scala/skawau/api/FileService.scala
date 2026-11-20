@@ -36,15 +36,11 @@ object OnConflict {
  */
 final class FileService(nodes: NodeStore, users: UserStore, blobs: Option[BlobStore], cfg: ApiConfig) {
 
-  def storageReady: Boolean = blobs.isDefined
-
   private def store: Res[BlobStore] = IO.pure(blobs.toRight(AppError(ErrorCode.StorageNotConfigured)))
 
   private def newKey(): String = s"files/${UUID.randomUUID()}"
 
   // ---------------------------------------------------------------- 権限
-
-  def viewer(s: AuthSession): Viewer = Viewer.of(s)
 
   /** 見えなければ 404、権限が足りなければ 403。 */
   def node(v: Viewer, id: UUID, need: Access): Res[(Node, Access)] =

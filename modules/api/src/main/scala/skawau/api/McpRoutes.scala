@@ -8,7 +8,9 @@ import io.circe.syntax.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
-import org.http4s.headers.{`WWW-Authenticate`, Allow, Authorization}
+import org.http4s.headers.Authorization
+import sbirds.mcp.{McpCaller, McpServer, McpTool}
+import sbirds.mcp.McpSchema.*
 import sbirds.http.Errors
 import skawau.core.*
 import skawau.shared.*
@@ -20,35 +22,10 @@ import skawau.shared.*
  */
 final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: String) extends Http4sDsl[IO] {
 
-  val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case req @ POST -> Root / "mcp" => postMcp(req)
-    case (GET | DELETE) -> Root / "mcp" => mcpMethodNotAllowed()
+  // POST /mcp（JSON-RPC）と GET・DELETE /mcp（405）は sbirds.mcp.McpServer
+  lazy val routes: HttpRoutes[IO] = McpServer.routes(host) <+> HttpRoutes.of[IO] {
     case GET -> Root / "api" / "endpoints" => getApiEndpoints()
   }
-
-  private def postMcp(req: Request[IO]): IO[Response[IO]] =
-    req.headers.get[Authorization] match {
-      case Some(auth @ Authorization(Credentials.Token(AuthScheme.Bearer, _))) =>
-        sessions.fromRequest(Request[IO](Method.GET, Uri.unsafeFromString("/mcp")).putHeaders(auth)).flatMap {
-          case None => unauthorized
-          case Some(session) =>
-            val call = Caller(auth)
-            req.as[Json].attempt.flatMap {
-              case Left(_) => BadRequest(rpcFail(Json.Null, -32700, "parse error"))
-              case Right(j) =>
-                j.asArray match {
-                  case Some(batch) => batch.toList.traverse(handle(call, session, _)).map(_.flatten).flatMap(rs =>
-                      if rs.isEmpty then Accepted() else Ok(rs.asJson)
-                    )
-                  case None => handle(call, session, j).flatMap(_.fold(Accepted())(Ok(_)))
-                }
-            }
-        }
-      case _ => unauthorized
-    }
-
-  private def mcpMethodNotAllowed(): IO[Response[IO]] =
-    MethodNotAllowed(Allow(Method.POST))
 
   private def getApiEndpoints(): IO[Response[IO]] =
     Ok(ApiCatalog.all.map(e =>
@@ -56,18 +33,21 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
     ))
 
   private val base = publicUrl.stripSuffix("/")
-  private val Versions = List("2025-06-18", "2025-03-26", "2024-11-05")
 
   /** read_file で返す文字数の上限（既定）。 */
   private val DefaultChars = 100000
 
-  // ------------------------------------------------------------------ REST API の内部呼び出し
+  // ------------------------------------------------------------------ REST API の内部呼び出し（sbirds.mcp.McpCaller）に足す、skawau の部分
 
-  private final class Caller(auth: Authorization) {
-    private def run(req0: Request[IO]): IO[Either[String, Response[IO]]] =
-      api.run(req0.putHeaders(auth, McpHeader -> "1")).value.flatMap {
+  private type Caller = McpCaller
+
+  extension (call: Caller) {
+
+    /** 中身をバイト列のまま受け取る（read_file）。 */
+    private def bytes(uri: Uri): IO[Either[String, Array[Byte]]] =
+      api.run(Request[IO](Method.GET, uri).putHeaders(call.auth, McpHeader -> "1")).value.flatMap {
         case None => IO.pure(Left("404 見つかりません"))
-        case Some(r) if r.status.isSuccess => IO.pure(Right(r))
+        case Some(r) if r.status.isSuccess => r.body.compile.to(Array).map(Right(_))
         case Some(r) => r.bodyText.compile.string.map { s =>
             Left(
               s"${r.status.code} ${parse(s).toOption.flatMap(_.hcursor.get[String]("error").toOption).getOrElse(r.status.reason)}"
@@ -75,64 +55,21 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
           }
       }
 
-    def apply(method: Method, uri: Uri, body: Option[Json] = None): IO[Either[String, Json]] =
-      run(McpRoutes.request(method, uri, body)).flatMap(_.flatTraverse(r =>
-        r.bodyText.compile.string.map(s =>
-          Right(if s.isEmpty then Json.Null else parse(s).getOrElse(Json.fromString(s)))
-        )
-      ))
-
-    def bytes(uri: Uri): IO[Either[String, Array[Byte]]] =
-      run(Request[IO](Method.GET, uri)).flatMap(_.traverse(_.body.compile.to(Array)))
-
-    def putText(uri: Uri, text: String): IO[Either[String, Json]] = apply(Method.PUT, uri, Some(Json.fromString(text)))
+    private def putText(uri: Uri, text: String): IO[Either[String, Json]] =
+      call(Method.PUT, uri, Some(Json.fromString(text)))
   }
-
-  private def path(segments: String*): Uri =
-    Uri(path = Uri.Path(segments.toVector.map(Uri.Path.Segment(_)), absolute = true))
 
   // ------------------------------------------------------------------ ツール
 
-  private type Result = IO[Either[String, String]]
-
-  private final case class Tool(name: String,
-                                description: String,
-                                schema: Json,
-                                readOnly: Boolean,
-                                destructive: Boolean = false)(val run: (Caller, ACursor) => Result) {
-    def json: Json = Json.obj(
-      "name" -> name.asJson,
-      "description" -> description.asJson,
-      "inputSchema" -> schema,
-      "annotations" -> Json.obj(
-        "readOnlyHint" -> readOnly.asJson,
-        "destructiveHint" -> destructive.asJson,
-        "openWorldHint" -> false.asJson
-      )
-    )
-  }
-
-  private def schema(required: List[String], props: (String, Json)*): Json =
-    Json.obj("type" -> "object".asJson, "properties" -> Json.obj(props*), "required" -> required.asJson)
-  private def str(d: String): Json = Json.obj("type" -> "string".asJson, "description" -> d.asJson)
-  private def int(d: String): Json = Json.obj("type" -> "integer".asJson, "description" -> d.asJson)
-  private def bool(d: String): Json = Json.obj("type" -> "boolean".asJson, "description" -> d.asJson)
-  private def strs(d: String): Json =
-    Json.obj("type" -> "array".asJson, "items" -> Json.obj("type" -> "string".asJson), "description" -> d.asJson)
+  private type Result = McpTool.Result
+  private type Tool = McpTool[Caller]
+  private def Tool(name: String, description: String, schema: Json, readOnly: Boolean, destructive: Boolean = false)(
+    run: (Caller, ACursor) => Result): Tool = McpTool(name, description, schema, readOnly, destructive)(run)
+  private def path(segments: String*): Uri = McpCaller.path(segments*)
 
   private val fileArg = "ファイル・フォルダの ID、または自分のルートからのパス（/資料/2026/報告.docx）"
 
-  private def need(a: ACursor, k: String): Either[String, String] =
-    a.get[String](k).toOption.map(_.trim).filter(_.nonEmpty).toRight(s"$k を指定してください")
   private def opt(a: ACursor, k: String): Option[String] = a.get[String](k).toOption.map(_.trim).filter(_.nonEmpty)
-  private def s(j: Json, k: String): String = j.hcursor.get[String](k).getOrElse("")
-
-  extension [A](e: Either[String, A]) {
-    private def withArgs(f: A => Result): Result = e.fold(err => IO.pure(Left(err)), f)
-  }
-  extension (r: IO[Either[String, Json]]) {
-    private def asText: Result = r.map(_.map(_.spaces2))
-  }
 
   /** ID またはパスを、ノードの情報（NodeHitDto の JSON: node・path）にする。 */
   private def resolve(call: Caller, v: String): IO[Either[String, Json]] =
@@ -605,64 +542,32 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
     }
   )
 
-  private val byName = tools.map(t => t.name -> t).toMap
+  // ------------------------------------------------------------------ MCP の枠（sbirds.mcp.McpServer）に差し込む、skawau の部分
 
-  // ------------------------------------------------------------------ JSON-RPC
-
-  private def ok(id: Json, result: Json): Json = Json.obj("jsonrpc" -> "2.0".asJson, "id" -> id, "result" -> result)
-  private def rpcFail(id: Json, code: Int, msg: String): Json =
-    Json.obj("jsonrpc" -> "2.0".asJson, "id" -> id, "error" -> Json.obj("code" -> code.asJson, "message" -> msg.asJson))
-  private def toolResult(r: Either[String, String]): Json =
-    Json.obj(
-      "content" -> Json.arr(Json.obj("type" -> "text".asJson, "text" -> r.merge.asJson)),
-      "isError" -> r.isLeft.asJson
+  private lazy val host = new McpServer.Host[AuthSession, Caller] {
+    val settings = McpServer.Settings(
+      "skawau",
+      toolFailed = ErrorCode.McpToolFailed,
+      maxBatch = 50,
+      batchTooLarge = n => s"バッチは${n}件までです",
+      // write_file の中身を本文で受けるので、/mcp だけ上限を大きくする
+      maxBodyBytes = Some(BodyLimit.Mcp),
+      readOnlyDenied = "参照専用の APIキーでは変更できません",
+      hideDenied = false
     )
-
-  private def handle(call: Caller, s: AuthSession, msg: Json): IO[Option[Json]] = {
-    val c = msg.hcursor
-    val params = c.downField("params")
-    c.downField("id").focus match {
-      case None => IO.pure(None) // 通知（notifications/initialized など）には応答しない
-      case Some(id) =>
-        c.get[String]("method").getOrElse("") match {
-          case "initialize" =>
-            val asked = params.get[String]("protocolVersion").toOption
-            IO.pure(Some(ok(
-              id,
-              Json.obj(
-                "protocolVersion" -> asked.filter(Versions.contains).getOrElse(Versions.head).asJson,
-                "capabilities" -> Json.obj("tools" -> Json.obj("listChanged" -> false.asJson)),
-                "serverInfo" -> Json.obj("name" -> "skawau".asJson, "version" -> "0.1.0".asJson),
-                "instructions" ->
-                  ("skawau（チームのファイル共有）のファイル・フォルダを読み書きするツールです。" +
-                    "ファイルは ID か、自分のルートからのパス（/資料/2026/報告.docx）で指定します。list_folder でたどり、search_files で名前から探し、" +
-                    "read_file で中身を読みます（docx・xlsx・pptx は文字だけ）。削除はごみ箱へ、上書きは新しい版になるので元に戻せます。" +
-                    "専用のツールがない操作は list_api_endpoints で REST API を調べ、call_api で行えます。権限はこの APIキーの持ち主と同じです。").asJson
-              )
-            )))
-          case "ping" => IO.pure(Some(ok(id, Json.obj())))
-          case "tools/list" => IO.pure(Some(ok(id, Json.obj("tools" -> tools.map(_.json).asJson))))
-          case "tools/call" =>
-            val name = params.get[String]("name").getOrElse("")
-            byName.get(name) match {
-              case None => IO.pure(Some(rpcFail(id, -32602, s"unknown tool: $name")))
-              case Some(t) if !s.canWrite && !t.readOnly =>
-                IO.pure(Some(ok(id, toolResult(Left("参照専用の APIキーでは変更できません")))))
-              case Some(t) =>
-                val args = params.downField("arguments").focus.filter(_.isObject).getOrElse(Json.obj()).hcursor
-                t.run(call, args).handleError(e => Left(s"内部エラー: ${e.getMessage}")).map(r =>
-                  Some(ok(id, toolResult(r)))
-                )
-            }
-          case "resources/list" => IO.pure(Some(ok(id, Json.obj("resources" -> Json.arr()))))
-          case "prompts/list" => IO.pure(Some(ok(id, Json.obj("prompts" -> Json.arr()))))
-          case other => IO.pure(Some(rpcFail(id, -32601, s"method not found: $other")))
-        }
-    }
+    val tools = McpRoutes.this.tools
+    def session(req: Request[IO], auth: Authorization) =
+      sessions.fromRequest(Request[IO](Method.GET, Uri.unsafeFromString("/mcp")).putHeaders(auth))
+    def unauthorized = Errors.respond(ErrorCode.McpApiKeyRequired)
+    def context(req: Request[IO], auth: Authorization, s: AuthSession) =
+      new McpCaller(api, auth, List(McpHeader -> "1"), build = McpRoutes.request)
+    def canWrite(s: AuthSession) = s.canWrite
+    def instructions(s: AuthSession) =
+      "skawau（チームのファイル共有）のファイル・フォルダを読み書きするツールです。" +
+        "ファイルは ID か、自分のルートからのパス（/資料/2026/報告.docx）で指定します。list_folder でたどり、search_files で名前から探し、" +
+        "read_file で中身を読みます（docx・xlsx・pptx は文字だけ）。削除はごみ箱へ、上書きは新しい版になるので元に戻せます。" +
+        "専用のツールがない操作は list_api_endpoints で REST API を調べ、call_api で行えます。権限はこの APIキーの持ち主と同じです。"
   }
-
-  private def unauthorized: IO[Response[IO]] =
-    Errors.respond(ErrorCode.McpApiKeyRequired).map(_.putHeaders(`WWW-Authenticate`(Challenge("Bearer", "skawau"))))
 }
 
 object McpRoutes {
