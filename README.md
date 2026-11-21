@@ -105,7 +105,7 @@ Docker で動かす例（アプリ・DB・S3 互換ストレージ・ONLYOFFICE�
 | `TRASH_DAYS` | ごみ箱のものを完全に削除するまでの日数（既定 30） |
 | `STATIC_DIR` | ビルド済みの画面（`dist/static`） |
 | `NODE_ID` | ノード名（ログ・定期処理のリース） |
-| `OAUTH_CLIENTS` | 認可を求める外部のサービス（skea・skiwi・skaka）。`[{"id":"skea","secret":"…（16文字以上）","redirectUri":"https://…/api/integrations/skawau/callback","name":"skea"}]`。`scopes`（既定 `["read"]`）で求めてよいスコープを決める（skaka は `["read","write"]`） |
+| `OAUTH_CLIENTS` | 認可を求める外部のサービス（skea・skiwi・skaka・skereru）。`[{"id":"skea","secret":"…（16文字以上）","redirectUri":"https://…/api/integrations/skawau/callback","name":"skea"}]`。`scopes`（既定 `["read"]`）で求めてよいスコープを決める（skaka・skereru は `["read","write"]`） |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` | ログ・メトリクス・トレースの送り先（skorimako の URL と `Authorization=Bearer sko_…`（ingest のキー））。未設定なら送らない。そのほか OpenTelemetry の標準の `OTEL_*` が使える |
 | `LOG_FORMAT` / `LOG_LEVEL` | 標準出力のログの形（`text`（既定）・`json`）と水準（既定 `INFO`）。ログにはトレースの ID と操作したユーザーが付く |
 | `SKORIMAKO_RUM_TOKEN` / `SKORIMAKO_RUM_URL` / `SKORIMAKO_RUM_SAMPLE_RATE` | 画面のブラウザの観測（skorimako の RUM）。トークンは skorimako の管理の画面で登録したアプリのもの。URL を省略すると `SKORIMAKO_URL` |
@@ -144,7 +144,7 @@ MCP のツール: `get_me`・`list_folder`・`search_files`・`get_file`・`read
 ファイルは ID か、自分のルートからのパス（`/資料/2026/報告.docx`）で指定します。どのツールも内部で REST API を同じキーで呼ぶので、権限・スコープは REST API と同じです
 （「読み取りのみ」のキーでは変更のツールは使えません）。
 
-## skea・skiwi・skaka との連携
+## skea・skiwi・skaka・skereru との連携
 
 skea・skiwi に貼った skawau のファイル・フォルダの URL（`/view/{ID}`・`/office/{ID}`・`/files/{ID}`）に、見る人の権限でファイル名を出すための仕組みです。
 取り決めは skea・skiwi の `docs/skawau-integration.md` にあります。skaka（Web 会議）は同じ仕組みで、会議の録画を本人の skawau に保存します（skaka の `docs/design.md`）。
@@ -152,6 +152,7 @@ skea・skiwi に貼った skawau のファイル・フォルダの URL（`/view/
 - `OAUTH_CLIENTS` に登録したサービスが、OAuth 2.0（認可コード + PKCE、S256 のみ）でユーザーごとにトークンを受け取ります
   （`/oauth/authorize`・`/oauth/token`・`/oauth/revoke`）。スコープは `scope` で求めたもの（既定は `read`）で、そのサービスの `scopes` に含まれるものだけ。
   skaka は `read write` を求め、録画を `PUT /api/files/{ルート}/upload?path=skaka 録画/…` で置き、会議の参加者と共有します。
+  skereru（メール）は `read write` を求め、ファイルを選んで添付し（`GET /api/files/{id}/content`）、メールの添付を `PUT /api/files/{フォルダ}/upload?path=メールの添付&conflict=rename` で置きます。
 - トークンは「<サービス名> 連携」というアプリパスワードとして個人設定に表示され、そこから失効できます。WebDAV には使えず、書き込みは write を許したサービスだけです。許可し直すと前のものは失効します。
 - `POST /api/files/lookup {"ids":[…]}`（100件まで）で、見られるもの（自分のもの・共有されたもの）だけ
   `{"files":[{"id","name","folder","isDir","mimeType"}]}` を返します（ごみ箱・存在しない・権限なしは区別せず返さない）。
@@ -159,5 +160,6 @@ skea・skiwi に貼った skawau のファイル・フォルダの URL（`/view/
   `{"users":[{"id","name","email"}]}` で返します（skaka が録画を参加者と共有するため）。
 - 開発用の値（`scripts/dev-env.sh`）: skea は `skea` / `skea-dev-secret-0123456789` / `http://localhost:8090/api/integrations/skawau/callback`、
   skiwi は `skiwi` / `skiwi-dev-secret-0123456789` / `http://localhost:5173/api/integrations/skawau/callback`、
-  skaka は `skaka` / `skaka-dev-secret-0123456789` / `http://localhost:5177/api/integrations/skawau/callback`（`read write`）。
+  skaka は `skaka` / `skaka-dev-secret-0123456789` / `http://localhost:5177/api/integrations/skawau/callback`（`read write`）、
+  skereru は `skereru` / `skereru-dev-secret-0123456789` / `http://localhost:8095/api/integrations/skawau/callback`（`read write`）。
   連携元に入れる skawau の URL は `http://localhost:5176`（Vite が `/oauth`・`/api` を :8092 へ中継し、127.0.0.1 で待ち受ける）。
