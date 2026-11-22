@@ -19,7 +19,7 @@ skea・skiwi・skaka（Web 会議）とは OAuth で連携します（8章）。
 | 同期 | サーバーが変更を画面へ即座に知らせ（SSE）、画面は表示中の一覧を取り直す（つながらないときは15秒ごとに確認） |
 | 外部の道具 | WebDAV（クラス1 + 形だけのロック）。REST API |
 | 基盤 | PostgreSQL（Patroni で冗長化）+ PGroonga（名前の日本語検索）、S3 互換ストレージ（開発は ScalaS3）、アプリは複数ノードで動かせるステートレス構成 |
-| 実装 | Scala 3.3 LTS、Cats Effect 3、http4s 1.0（マイルストーン版）、doobie、Flyway。画面は Scalactive（Scala.js） |
+| 実装 | Scala 3.9 LTS、Cats Effect 3、http4s 1.0（マイルストーン版）、doobie、Flyway。画面は Scalactive（Scala.js） |
 
 ## 2. 全体アーキテクチャ
 

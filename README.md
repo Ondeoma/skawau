@@ -49,7 +49,7 @@ ONLYOFFICE と連携して、Word・Excel・PowerPoint の文書をブラウザ�
 | `frontend/` | Vite。Scala.js の出力をまとめてビルドする（フォルダのドロップ・ONLYOFFICE の読み込みの小さな JS を含む） |
 | `deploy/` | Docker のひな形（アプリ・ScalaS3・本番の例） |
 
-技術: Scala 3.3 LTS、Cats Effect 3、http4s 1.0（マイルストーン版）、doobie、Flyway、PostgreSQL 17 + PGroonga、S3 互換ストレージ、
+技術: Scala 3.9 LTS、Cats Effect 3、http4s 1.0（マイルストーン版）、doobie、Flyway、PostgreSQL 17 + PGroonga、S3 互換ストレージ、
 Scala.js + Scalactive、ONLYOFFICE Docs（Document Server）。
 
 ## 開発
