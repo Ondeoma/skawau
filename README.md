@@ -54,7 +54,7 @@ Scala.js + Scalactive、ONLYOFFICE Docs（Document Server）。
 
 ## 開発
 
-必要なもの: JDK 21、sbt、Node.js、Docker。
+必要なもの: JDK 25、sbt、Node.js、Docker。
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d --wait   # PostgreSQL+PGroonga (:54340)、ScalaS3 (:3911)、ONLYOFFICE (:8093)
