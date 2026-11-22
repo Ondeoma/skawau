@@ -1,7 +1,6 @@
 <script lang="scala">
 import skawau.web.*
 import org.scalajs.dom
-import skawau.shared.*
 
 
 // プレビュー（Store.preview）: 同じフォルダの画像・動画・PDF・テキストを ← → で送れる.
